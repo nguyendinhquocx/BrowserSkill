@@ -248,6 +248,9 @@ and finished help requests are not reopened. Allowing help makes `request-help` 
 not require every browser action to ask for permission. Task authorization and host approvals still apply.
 
 Start tasks with `bsk session start`; add `--no-focus` to avoid focusing the Agent Window.
+For a specific Chrome profile, use **Copy profile instructions** in that profile's extension
+popup and send them to your agent. This pins each new session to its instance with `--browser`,
+even when only one browser is online. See [browser profile selection](docs/browser-profiles.md).
 For unattended operation, turn off the corresponding settings in the extension. `--unattended`,
 `tab borrow --no-confirm`, and `BSK_REQUEST_HELP=off` remain accepted for compatibility but are
 deprecated and cannot override the switches. The CLI logs a notice when these inputs are used;

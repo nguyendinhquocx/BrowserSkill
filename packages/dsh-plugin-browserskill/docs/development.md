@@ -31,6 +31,18 @@ plugin is unloaded. Repeated invocations do not register duplicate tools. Enteri
 a resumed conversation whose history contains a successful skill invocation also
 registers the tools. Setting `lazyTools: false` registers them at plugin startup.
 
+Reload recovery recognizes both current DSH tool-result messages (a tool source
+and a matching `tool-result` content block) and older flat `callId`/`isError`
+messages. It scans each session object's existing append-only history once per
+plugin lifetime, using `snapshotEvents()` on newer hosts or the legacy `events`
+getter. It then folds new events without reading or copying the full log on
+streaming updates. Pending call IDs are isolated by session and removed when their
+results arrive. A failed history read is retried on a later event; sessions missed
+at startup are discovered through service readiness or their first later event.
+Failed registration retains the invocation proof and retries on the next turn,
+session entry, service discovery, or successful skill invocation. Streaming
+events continue to fold without repeated registration attempts or warnings.
+
 ## Observation subscriptions and routes
 
 - **Native presentation**: the client optionally injects `sidebarRight` and

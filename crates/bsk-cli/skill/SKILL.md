@@ -45,12 +45,34 @@ environment settings may not persist between shell calls. Keep browser commands
 sandboxed. For other startup failures, retry once, then use `bsk doctor`.
 A local process identity warning permits browser commands when IPC works.
 
+## Required browser profiles
+
+When the user requires a particular browser profile, bind the task to that
+profile's extension instance before starting a session, even if only one browser
+is connected. A Chrome profile name or directory is not a BrowserSkill instance
+ID or an automatically assigned label.
+
+Use the instance ID from the BrowserSkill popup in the required profile. The user
+can choose **Copy profile instructions** there and send the resulting instruction.
+If only a profile name/path is supplied and its mapping is unknown, ask the user
+to open that profile, verify its Profile Path at `chrome://version`, and copy the
+profile instructions. Do not infer the mapping from a single Connected browser
+or Chrome process command lines.
+
+Run `bsk browsers --json` to check that the supplied instance is connected, then
+pass `--browser <instance-id>` on every new session for this task. A previously
+verified unique label also works. If the target is missing or ambiguous, stop and
+report it; never omit the selector or substitute another instance to recover.
+Opening another Chrome profile does not retarget an existing session. After an
+extension reinstall or storage reset, obtain the instance mapping again.
+
 ## Task workflow
 
-1. Define success from the user's request. Start `bsk session start --json` and
-   retain its `session_id`. With multiple browsers, run `bsk browsers` and add
-   `--browser <id-or-label>` to start. For background work, add `--no-focus` to
-   `session start` only.
+1. Define success from the user's request. For a required browser profile, follow
+   **Required browser profiles** above and start with its explicit `--browser`
+   selector. Otherwise start `bsk session start --json`; with multiple browsers,
+   run `bsk browsers` and choose `--browser <id-or-label>`. Retain the returned
+   `session_id`. For background work, add `--no-focus` to `session start` only.
 2. For a new page, navigate; for an existing user tab, follow **Borrowing** below.
    Read the page before interacting:
 
@@ -135,6 +157,18 @@ bsk tab borrow <tab-id> --session <id>
 bsk tab return <tab-id> --session <id>
 ```
 
+Borrowing selects the borrowed tab within the Agent Window, preserving the default
+for subsequent commands without `--tab-id`. It does not additionally focus the
+window. For a background-created tab (`tab create --no-active`), retain the returned
+`tab_id` and pass `--tab-id <tab-id>` to observation, navigation and input commands.
+Created and borrowed web pages continue running while controlled even after they
+move into the background. A default created tab starts at `about:blank`.
+Viewport and full-page screenshots of controlled tabs work in the background;
+pass `--tab-id` without selecting the target or focusing the window. Prefer
+semantic observation first and take a screenshot when the task needs image content.
+A viewport screenshot does not issue a Canvas `capture_id`; use the existing
+`--ref` flow for screenshot-bound Canvas clicks.
+
 Never invent tab IDs or keep a user tab across unrelated work. Do not repeat
 pending, denied or timed-out borrows. For `borrow_outcome_unknown`, inspect tab/
 session state first: the tab may already have moved. Do not bypass an outcome
@@ -209,8 +243,10 @@ The default `--scope follow` follows appended content. Use `--scope current` whe
 capturing the currently loaded range is requested: it stops at the initial document
 height, even if a loading indicator remains. Later content below that boundary is
 excluded; report this range rather than claiming all feed entries were loaded.
-Use a selected, session-controlled tab and stable viewport; `--tab-id` targets a
-tab without selecting it. Internal browser pages, the Web Store, nested scrolling
+Use a session-controlled tab and stable viewport; `--tab-id` targets a tab without
+selecting it or focusing the window. Switching to another tab does not cancel
+capture; navigation, loss of control or a debugger reconnection does.
+Internal browser pages, the Web Store, nested scrolling
 panels and virtualized lists are unsupported. Capture/encoding defaults to 2m;
 `--timeout 5m` extends it only in full-page mode. Allow the shell enough time for
 capture plus transfer. Respect cancellation; do not blindly retry endless pages
@@ -218,10 +254,9 @@ or substitute a viewport image when an older extension rejects full-page capture
 Use matching CLI/extension builds. Ctrl-C cancels; failed full-page captures save
 no partial image. A `loading_stalled` error means the bottom kept a loading
 indicator without height growth for 30s; do not simply increase the deadline.
-Choose `current` only when that range satisfies the request. Keep the capture tab
-visible: `page_hidden` is an environment interruption, while `user_cancelled`
-means user input stopped capture. For other failures follow the returned reason
-and hint; do not work around them by editing the page or stitching screenshots.
+Choose `current` only when that range satisfies the request. A `user_cancelled`
+error means user input stopped capture. For other failures follow the returned
+reason and hint; do not work around them by editing the page or stitching screenshots.
 
 For `@eN canvas [visual:screenshot]`, observe returns text, not pixels. Screenshot
 that ref when its contents matter; never infer Canvas controls or names from

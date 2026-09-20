@@ -213,6 +213,9 @@ bsk update --yes
 允许人工协助意味着 `request-help` 可用，不代表每个浏览器操作都必须先请求许可；任务授权和宿主审批仍然有效。
 
 正常使用 `bsk session start`；需要后台打开 Agent Window 时添加 `--no-focus`。
+需要指定 Chrome Profile 时，在目标 Profile 的扩展弹窗中点击“复制此 Profile 的指令”，
+再发给 Agent。指令通过 `--browser` 为每个新会话固定实例，即使只有一个浏览器在线也不省略。
+详见[浏览器 Profile 选择](docs/browser-profiles.md)。
 无人值守由用户在插件中关闭相应开关。`--unattended`、`tab borrow --no-confirm`、
 `BSK_REQUEST_HELP=off` 保留兼容识别，但已弃用，不能覆盖插件开关。CLI 使用这些输入时会输出说明，
 Daemon 也会为自身继承的旧环境设置记录说明。原先只依靠这些输入避免等待的脚本，现在需要遵循浏览器设置。

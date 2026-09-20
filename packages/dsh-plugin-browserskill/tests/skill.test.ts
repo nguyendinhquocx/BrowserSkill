@@ -50,7 +50,11 @@ describe("registerBskSkill", () => {
     // Keep the lazily injected instructions inside a bounded prompt budget,
     // while the lower bound catches accidental truncation of the guidance.
     expect(content.length).toBeGreaterThan(3_000);
-    expect(content.length).toBeLessThan(7_000);
+    expect(content.length).toBeLessThan(8_000);
+    expect(content).toContain(
+      'browser_session({ action: "start", browser: "<verified-instance-id>" })',
+    );
+    expect(content).toMatch(/Never omit\s+`browser` or substitute another instance/);
     expect(content).toContain("[visual:screenshot]");
     expect(content).toContain("nextCursor");
     expect(skill.source).toBe("bundled");

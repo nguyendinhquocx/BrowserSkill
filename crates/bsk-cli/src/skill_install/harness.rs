@@ -398,10 +398,23 @@ fn command_exists(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// 读写 KIMI_CODE_HOME 环境变量的测试共用的互斥锁（Rust 测试默认并行）。
-    fn kimi_env_lock() -> &'static std::sync::Mutex<()> {
+    /// Serializes every test in this module that reads or writes
+    /// `HERMES_HOME` or `KIMI_CODE_HOME`. libtest runs tests on parallel
+    /// threads, where one thread's `set_var` races another's `getenv`.
+    /// Tests elsewhere in the crate reach these variables only by iterating
+    /// `HarnessId::ALL` and never assert on the resolved home.
+    fn harness_env_lock() -> &'static std::sync::Mutex<()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         &LOCK
+    }
+
+    /// Takes [`harness_env_lock`], ignoring poisoning left by an unrelated
+    /// test failure: the guarded state is the process environment, which each
+    /// writer restores before returning.
+    fn lock_harness_env() -> std::sync::MutexGuard<'static, ()> {
+        harness_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     #[test]
@@ -438,6 +451,8 @@ mod tests {
 
     #[test]
     fn skills_dirs_match_harness_spec() {
+        // Resolves Hermes and Kimi Code through their environment overrides.
+        let _env = lock_harness_env();
         let home = Path::new("/home/user");
         assert_eq!(
             HarnessId::Codex.skills_dir_for_home(home),
@@ -479,10 +494,7 @@ mod tests {
 
     #[test]
     fn detects_kimi_code_from_home_layout() {
-        // 与改动 KIMI_CODE_HOME 的测试互斥，避免并行读写环境变量产生竞争。
-        let _guard = kimi_env_lock()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let _env = lock_harness_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         std::fs::create_dir_all(home.join(".kimi-code")).unwrap();
@@ -495,14 +507,14 @@ mod tests {
 
     #[test]
     fn kimi_code_skills_dir_honors_kimi_code_home_env() {
-        let _guard = kimi_env_lock()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let _env = lock_harness_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let custom = tmp.path().join("custom-kimi-code");
         std::fs::create_dir_all(&custom).unwrap();
         let previous = std::env::var("KIMI_CODE_HOME").ok();
-        // SAFETY: 持有 kimi_env_lock，覆盖所有读写 KIMI_CODE_HOME 的测试。
+        // SAFETY: holds `harness_env_lock`, which every test in this module
+        // that reads or writes KIMI_CODE_HOME also takes, so no sibling test
+        // calls `getenv` on it while this override is installed.
         unsafe {
             std::env::set_var("KIMI_CODE_HOME", &custom);
         }
@@ -544,6 +556,8 @@ mod tests {
 
     #[test]
     fn detects_hermes_from_home_layout() {
+        // Resolves the Hermes home through HERMES_HOME.
+        let _env = lock_harness_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         std::fs::create_dir_all(home.join(".hermes")).unwrap();
@@ -554,11 +568,14 @@ mod tests {
 
     #[test]
     fn hermes_skills_dir_honors_hermes_home_env() {
+        let _env = lock_harness_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let custom = tmp.path().join("custom-hermes");
         std::fs::create_dir_all(&custom).unwrap();
         let previous = std::env::var("HERMES_HOME").ok();
-        // SAFETY: harness tests do not run in parallel with other env-mutating tests.
+        // SAFETY: holds `harness_env_lock`, which every test in this module
+        // that reads or writes HERMES_HOME also takes, so no sibling test
+        // calls `getenv` on it while this override is installed.
         unsafe {
             std::env::set_var("HERMES_HOME", &custom);
         }
