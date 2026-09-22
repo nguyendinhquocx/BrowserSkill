@@ -1,7 +1,10 @@
+import type { DebugManager, DebugTicket } from "@/debug/manager";
+import type { DebugParams } from "@/debug/types";
 import type { InteractionPreferenceStore } from "@/lib/interaction-preferences";
 import { OVERLAY_AUTOMATION_BYPASS } from "@/lib/overlay-bridge";
 import { ScreenshotExports } from "@/long-screenshot/exports";
 import type { SessionManager } from "@/session-manager/manager";
+import { withTaskPopups } from "@/session-manager/task-popups";
 import type { Transport } from "@/transport/transport";
 import type {
   BlurParams,
@@ -45,6 +48,7 @@ import { isRequestFrame } from "@/transport/types";
 import { auditContext } from "./audit-context";
 import { prepareBackgroundExecution } from "./background-execution";
 import { handleConsole } from "./console";
+import { handleDebug } from "./debug";
 import { handleDownload } from "./download";
 import { type EmulateCdpRunner, handleEmulate } from "./emulate";
 import { classifyCdpError } from "./errors";
@@ -130,6 +134,7 @@ interface HoverLatchScope {
 }
 
 export interface DispatcherDeps {
+  debug?: DebugManager;
   transport: Transport;
   sessions: SessionManager;
   cdp?: DispatcherCdpRunner;
@@ -152,6 +157,9 @@ export interface DispatcherDeps {
   helpNotificationCopy?: () => { title: string; body: string };
 }
 
+/** Tools whose page input can make the page open another tab or window. */
+const OPENS_TABS = new Set(["tool.click", "tool.press"]);
+
 /**
  * Routes RPC requests pushed by the daemon over the Transport to the
  * appropriate tool implementation.
@@ -169,6 +177,7 @@ export interface DispatcherDeps {
  * takes the fast path.
  */
 export class ToolDispatcher {
+  private readonly debug?: DebugManager;
   private readonly transport: Transport;
   private readonly sessions: SessionManager;
   private screenshotExports: ScreenshotExports;
@@ -183,6 +192,8 @@ export class ToolDispatcher {
   private subscription: { dispose(): void } | null = null;
   private readonly hoverBypassTabs = new Map<number, string>();
   private readonly hoverLatches = new Map<number, HoverLatch>();
+  private pendingSessionStarts = 0;
+  private idleOperationInProgress = false;
   /**
    * Per-rpc-id `AbortController` registry. Populated inside
    * [`dispatch`] before we await the tool handler and torn down in
@@ -192,6 +203,7 @@ export class ToolDispatcher {
   readonly inflightAbortControllers = new Map<string, AbortController>();
 
   constructor(deps: DispatcherDeps) {
+    this.debug = deps.debug;
     this.transport = deps.transport;
     this.sessions = deps.sessions;
     this.screenshotExports = new ScreenshotExports((id) => this.sessions.has(id));
@@ -212,7 +224,31 @@ export class ToolDispatcher {
     });
   }
 
+  /**
+   * Reserve an idle browser for a connection change. Count start requests from
+   * receipt, before any asynchronous preparation or window creation. Reject new
+   * starts during the change so an old connection's request cannot create a
+   * session after reconnecting.
+   */
+  async runWhenIdle(operation: () => Promise<void>): Promise<boolean> {
+    if (
+      this.idleOperationInProgress ||
+      this.pendingSessionStarts > 0 ||
+      this.sessions.list().length > 0
+    ) {
+      return false;
+    }
+    this.idleOperationInProgress = true;
+    try {
+      await operation();
+      return true;
+    } finally {
+      this.idleOperationInProgress = false;
+    }
+  }
+
   stop(): void {
+    this.debug?.dispose();
     this.subscription?.dispose();
     this.subscription = null;
     // Trip every outstanding controller so dependent waits unblock
@@ -260,13 +296,18 @@ export class ToolDispatcher {
       return;
     }
 
-    const mutatesSessions =
-      req.method === "tool.session_start" || req.method === "tool.session_stop";
+    const startsSession = req.method === "tool.session_start";
+    const mutatesSessions = startsSession || req.method === "tool.session_stop";
+    if (startsSession) this.pendingSessionStarts += 1;
     const ac = new AbortController();
     this.inflightAbortControllers.set(req.id, ac);
     let body: ResponseFrame;
     let startedSession: string | null = null;
+    let debugTicket: DebugTicket | undefined;
     try {
+      if (startsSession && this.idleOperationInProgress) {
+        throw new Error("Browser settings are updating; retry session start.");
+      }
       const sessionId = sessionIdForBrowserControlMethod(req);
       if (sessionId) this.onBrowserControlResumed?.(sessionId);
       // Best-effort context must never prevent the requested operation.
@@ -276,7 +317,23 @@ export class ToolDispatcher {
       } catch {
         /* The daemon still has the original operation metadata. */
       }
-      const result = await this.invoke(req, ac.signal);
+      try {
+        debugTicket = await this.debug?.before(req, ac.signal);
+      } catch {
+        /* Evidence must not block the operation. */
+      }
+      throwIfDispatchAborted(ac.signal);
+      const result = OPENS_TABS.has(req.method)
+        ? await withTaskPopups(
+            this.sessions,
+            (req.params ?? {}) as { session_id?: string; tab_id?: number },
+            (inputSent) => this.invoke(req, ac.signal, inputSent),
+            this.onAgentTabClaimed,
+            ac.signal,
+          )
+        : await this.invoke(req, ac.signal);
+      this.debug?.after(debugTicket, isRpcError(result) ? result.message : undefined);
+      debugTicket = undefined;
       if (isRpcError(result)) {
         body = { id: req.id, error: classifyCdpError(result) };
       } else {
@@ -301,6 +358,8 @@ export class ToolDispatcher {
         };
       }
     } finally {
+      if (startsSession) this.pendingSessionStarts -= 1;
+      this.debug?.after(debugTicket, "operation failed");
       this.inflightAbortControllers.delete(req.id);
     }
     let sent = true;
@@ -335,10 +394,17 @@ export class ToolDispatcher {
         console.warn("[bsk dispatcher] session rollback after send failure failed", rollbackErr);
       }
     }
-    if (mutatesSessions) this.onSessionsChanged?.();
+    if (mutatesSessions) {
+      this.debug?.sync();
+      this.onSessionsChanged?.();
+    }
   }
 
-  private async invoke(req: RequestFrame, signal: AbortSignal): Promise<unknown | RpcError> {
+  private async invoke(
+    req: RequestFrame,
+    signal: AbortSignal,
+    onInputSent?: (tabId: number) => void,
+  ): Promise<unknown | RpcError> {
     const sessionId = (req.params as { session_id?: string } | undefined)?.session_id;
     // Also enforce this for gateways backed by a local-mode daemon, where the
     // standalone server's early IPC rejection does not apply.
@@ -361,12 +427,26 @@ export class ToolDispatcher {
     );
     if (preparationError) return preparationError;
     switch (req.method) {
+      case "tool.debug":
+        if (!this.debug)
+          return {
+            code: "unsupported",
+            message: "Website debugging requires a compatible extension",
+          };
+        return handleDebug(
+          this.sessions,
+          req.params as DebugParams,
+          this.debug,
+          chromeTabsApi,
+          signal,
+        );
       case "tool.session_start":
         return handleSessionStart(this.sessions, req.params as SessionStartParams, {
           signal,
           preferences: this.interactionPreferences,
         });
       case "tool.session_stop": {
+        this.debug?.releaseSession((req.params as SessionStopParams).session_id);
         await this.screenshotExports.releaseSession((req.params as SessionStopParams).session_id);
         await this.releaseHoverLatch((req.params as SessionStopParams).session_id);
         return handleSessionStop(this.sessions, req.params as SessionStopParams, {
@@ -415,6 +495,7 @@ export class ToolDispatcher {
           signal,
           cdp: this.cdp,
           beforeReturn: async (sessionId, tabId) => {
+            this.debug?.stopTab(tabId);
             if (this.sessions.get(sessionId)?.remote) clearRecordingForSession(sessionId);
             await this.releaseHoverLatch(sessionId, tabId);
           },
@@ -584,6 +665,7 @@ export class ToolDispatcher {
                     tabsApi: chromeTabsApi,
                     signal,
                     bypassOverlay,
+                    onInputSent,
                   }
                 : undefined,
             ),
@@ -672,7 +754,7 @@ export class ToolDispatcher {
             handlePress(
               this.sessions,
               req.params as PressParams,
-              this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+              this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal, onInputSent } : undefined,
             ),
           signal,
         );
@@ -911,6 +993,12 @@ function recordingRuntimeUnavailable(): RpcError {
 }
 
 function sessionIdForBrowserControlMethod(req: RequestFrame): string | null {
+  if (req.method === "tool.debug") {
+    const params = req.params as DebugParams | undefined;
+    return params && ["rule_add", "rule_enable", "replay"].includes(params.action)
+      ? params.session_id
+      : null;
+  }
   switch (req.method) {
     case "tool.tab_create":
     case "tool.tab_close":

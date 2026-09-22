@@ -322,6 +322,53 @@ describe("handleClick", () => {
     expect(bypassOverlay).toHaveBeenCalledWith(4, false);
   });
 
+  it("enables overlay bypass when the overlay host itself captures the point", async () => {
+    const bypassOverlay = vi.fn().mockResolvedValue(undefined);
+    const host = document.createElement("browser-skill-overlay");
+    host.setAttribute("data-bsk-overlay", "");
+    host.style.cssText =
+      "position:fixed;inset:0;width:100vw;height:100vh;pointer-events:auto;display:block";
+    host.attachShadow({ mode: "closed" });
+    document.body.append(host);
+    Object.defineProperty(host, "getBoundingClientRect", {
+      value: () => ({
+        x: 0,
+        y: 0,
+        width: 1280,
+        height: 720,
+        top: 0,
+        left: 0,
+        right: 1280,
+        bottom: 720,
+      }),
+    });
+    const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
+    const ctx = await sm.start("aa11");
+    ctx.refStore.set("e3", 1234, { tabId: 4 });
+    const fake = makeFakeCdp({
+      "DOM.scrollIntoViewIfNeeded": () => ({}),
+      "DOM.getContentQuads": () => ({ quads: [[10, 20, 110, 20, 110, 60, 10, 60]] }),
+      "Runtime.evaluate": (params: unknown) => {
+        const expr = String((params as { expression?: string })?.expression ?? "");
+        const value = new Function(`return (${expr})`)();
+        return { result: { value } };
+      },
+      "Input.dispatchMouseEvent": () => ({}),
+    });
+    try {
+      const res = await handleClick(
+        sm,
+        { session_id: "aa11", ref: "@e3" },
+        { cdp: fake.cdp, tabsApi: fake.tabsApi, bypassOverlay },
+      );
+      if ("code" in res) throw new Error(`unexpected error: ${JSON.stringify(res)}`);
+      expect(bypassOverlay).toHaveBeenCalledWith(4, true);
+      expect(bypassOverlay).toHaveBeenCalledWith(4, false);
+    } finally {
+      host.remove();
+    }
+  });
+
   it("skips overlay bypass when overlay does not block the click point", async () => {
     const bypassOverlay = vi.fn().mockResolvedValue(undefined);
     const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
@@ -1338,6 +1385,12 @@ describe("resolveKeyDescriptor", () => {
   it("returns null for unknown keys", () => {
     expect(resolveKeyDescriptor("UnknownKey")).toBeNull();
   });
+  it("maps special keys without requiring CDP casing", () => {
+    expect(resolveKeyDescriptor("enter")).toEqual(resolveKeyDescriptor("Enter"));
+    expect(resolveKeyDescriptor("ESCAPE")).toEqual(resolveKeyDescriptor("Escape"));
+    expect(resolveKeyDescriptor("arrowdown")).toMatchObject({ code: "ArrowDown" });
+    expect(resolveKeyDescriptor("space")).toMatchObject({ key: " ", code: "Space" });
+  });
 });
 
 // PressResult also has a `code` field (the CDP keyboard code), so
@@ -1495,6 +1548,21 @@ describe("handlePress", () => {
 
     expect(res).toMatchObject({ code: "cancelled" });
     expect(fake.sent.some((c) => c.method === "DOM.focus")).toBe(false);
+  });
+
+  it("presses Enter when the key name is lowercase", async () => {
+    const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
+    await sm.start("aa11");
+    const fake = makeFakeCdp({ "Input.dispatchKeyEvent": () => ({}) });
+    const res = await handlePress(
+      sm,
+      { session_id: "aa11", key: "ctrl+enter" },
+      { cdp: fake.cdp, tabsApi: fake.tabsApi },
+    );
+    expectPressOk(res);
+    expect(res.key).toBe("Enter");
+    expect(res.code).toBe("Enter");
+    expect(res.modifiers).toEqual(["ctrl"]);
   });
 
   it("returns invalid_params for an unknown key", async () => {
@@ -1771,4 +1839,47 @@ describe("handleSelect", () => {
     expect(res).toMatchObject({ code: "cancelled" });
     expect(fake.sent.some((c) => c.method === "Runtime.callFunctionOn")).toBe(false);
   });
+});
+
+it.each([
+  "click",
+  "press",
+])("arms popup observation at native %s dispatch, after preparation", async (kind) => {
+  const manager = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
+  const task = await manager.start("popup");
+  task.refStore.set("e1", 1234, { tabId: 4 });
+  const order: string[] = [];
+  const fake = makeFakeCdp({
+    "DOM.scrollIntoViewIfNeeded": () => {
+      order.push("prepare");
+      return {};
+    },
+    "DOM.getContentQuads": () => ({ quads: [[10, 20, 110, 20, 110, 60, 10, 60]] }),
+    "Input.dispatchMouseEvent": (p) => {
+      order.push((p as { type: string }).type);
+      return {};
+    },
+    "Input.dispatchKeyEvent": (p) => {
+      order.push((p as { type: string }).type);
+      return {};
+    },
+  });
+  const onInputSent = vi.fn((id: number) => {
+    expect(id).toBe(4);
+    order.push("arm");
+  });
+  const deps = { cdp: fake.cdp, tabsApi: fake.tabsApi, onInputSent };
+  const result =
+    kind === "click"
+      ? await handleClick(manager, { session_id: "popup", ref: "e1" }, deps)
+      : await handlePress(manager, { session_id: "popup", key: "Enter" }, deps);
+  expect(result).toHaveProperty("tab_id", 4);
+  expect(onInputSent).toHaveBeenCalledTimes(2);
+  if (kind === "click")
+    expect(order).toEqual(["prepare", "mouseMoved", "arm", "mousePressed", "arm", "mouseReleased"]);
+  else {
+    expect(order.indexOf("arm")).toBeLessThan(order.indexOf("rawKeyDown"));
+    expect(order.at(-2)).toBe("arm");
+    expect(order.at(-1)).toBe("keyUp");
+  }
 });

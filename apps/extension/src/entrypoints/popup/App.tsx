@@ -6,8 +6,11 @@ import { AuditPanel } from "@/components/audit-panel";
 import { compareProtocol } from "@/lib/semver";
 import { PROTOCOL_VERSION } from "@/transport/handshake";
 import functionIconUrl from "../../../assets/function.svg";
+import { BrowserLabel } from "./browser-label";
 import { ConnectionSettings } from "./connection-settings";
 import { ConnectionStatusIndicator } from "./connection-status-indicator";
+import { CurrentTasks } from "./current-tasks";
+import { DebugPanel } from "./debug-panel";
 import { POPUP_FEATURES, type PopupView } from "./features";
 import { InteractionSettings } from "./interaction-settings";
 import { LongScreenshot } from "./long-screenshot";
@@ -40,7 +43,7 @@ function getLogoSrc() {
 
 export function App() {
   const { t } = useTranslation("extension");
-  const { snapshot, statusState, setConnectionEnabled } = useConnectionState();
+  const { snapshot, statusState, setLabel, setConnectionEnabled } = useConnectionState();
   const [controlHintsHidden, setControlHintsHidden] = useControlHintsHidden();
   const [view, setView] = useState<PopupView>("main");
   const [copiedInstanceId, setCopiedInstanceId] = useState(false);
@@ -122,13 +125,15 @@ export function App() {
   const headerTitle =
     view === "features"
       ? t("popup.launcher.title")
-      : view === "record"
-        ? t("popup.record.sectionTitle")
-        : view === "long-screenshot"
-          ? t("longScreenshot.title")
-          : view === "audit"
-            ? t("audit.title")
-            : t("popup.brandName");
+      : view === "debug"
+        ? t("debug.title")
+        : view === "record"
+          ? t("popup.record.sectionTitle")
+          : view === "long-screenshot"
+            ? t("longScreenshot.title")
+            : view === "audit"
+              ? t("audit.title")
+              : t("popup.brandName");
 
   return (
     <main
@@ -233,6 +238,11 @@ export function App() {
               connectionEnabled={snapshot.connectionEnabled}
               disconnected={isDisconnected && !snapshot.lastError}
             />
+            <BrowserLabel
+              label={snapshot.label}
+              sessionCount={snapshot.sessionCount}
+              onSave={setLabel}
+            />
             <ProfileInstructions instanceId={snapshot.instanceId} connected={connectionLive} />
           </section>
 
@@ -262,6 +272,8 @@ export function App() {
           </section>
 
           <InteractionSettings />
+
+          <CurrentTasks enabled={connectionLive} />
 
           {snapshot.lastError && (
             <div
@@ -343,6 +355,7 @@ export function App() {
 
       {view === "long-screenshot" && <LongScreenshot />}
       {view === "audit" && <AuditPanel />}
+      {view === "debug" && <DebugPanel connected={connectionLive} />}
 
       {view === "record" && (
         <section className="space-y-2.5" data-slot="popup-record-body">
