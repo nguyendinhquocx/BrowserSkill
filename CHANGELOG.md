@@ -5,6 +5,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Starting from 0.2.0, CLI / Extension / DSH Plugin share the same version number.
 
+## [Unreleased]
+
+### Fixed
+
+- Protocol: preserve explicit `null` results when deserializing `ResponseFrame`,
+  restoring round-trip consistency while rejecting responses with both a result and an error.
+
 ## [0.3.1] - 2026-09-23
 
 ### Added

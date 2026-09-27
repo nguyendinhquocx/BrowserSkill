@@ -94,7 +94,9 @@ impl<'de> Deserialize<'de> for ResponseFrame {
         #[derive(Deserialize)]
         struct Flat {
             id: RpcId,
+            #[serde(default, deserialize_with = "de_present_field")]
             result: Option<serde_json::Value>,
+            #[serde(default, deserialize_with = "de_present_field")]
             error: Option<RpcError>,
         }
 
@@ -112,6 +114,16 @@ impl<'de> Deserialize<'de> for ResponseFrame {
             (Some(_), Some(_)) => Err(de::Error::custom(DecodeError::AmbiguousResponse)),
         }
     }
+}
+
+// Deserialize present fields as their actual type: Value accepts null, but
+// RpcError requires an error object. Missing fields use #[serde(default)].
+fn de_present_field<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 impl Serialize for Frame {
@@ -279,5 +291,103 @@ mod tests {
             back.payload.get("session_id").and_then(|v| v.as_str()),
             Some("sess-1"),
         );
+    }
+
+    #[test]
+    fn explicit_null_result_decodes_as_ok_null() {
+        let wire = serde_json::json!({ "id": "rpc-1", "result": null });
+        let frame: Frame = serde_json::from_value(wire).unwrap();
+        assert_eq!(
+            frame,
+            Frame::Response(ResponseFrame {
+                id: "rpc-1".into(),
+                body: ResponseBody::Ok(serde_json::Value::Null),
+            })
+        );
+    }
+
+    #[test]
+    fn explicit_null_result_response_frame_decodes_as_ok_null() {
+        let wire = r#"{"id":"rpc-2","result":null}"#;
+        let resp: ResponseFrame = serde_json::from_str(wire).unwrap();
+        assert_eq!(resp.id, "rpc-2");
+        assert_eq!(resp.body, ResponseBody::Ok(serde_json::Value::Null));
+    }
+
+    #[test]
+    fn null_result_round_trips_through_serialise() {
+        let response = ResponseFrame {
+            id: "rpc-3".into(),
+            body: ResponseBody::Ok(serde_json::Value::Null),
+        };
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire, serde_json::json!({ "id": "rpc-3", "result": null }));
+        let back: ResponseFrame = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(back, response);
+        let frame: Frame = serde_json::from_value(wire).unwrap();
+        assert_eq!(frame, Frame::Response(response));
+    }
+
+    #[test]
+    fn missing_result_and_error_still_rejected() {
+        let wire = serde_json::json!({ "id": "rpc-4" });
+        assert!(serde_json::from_value::<Frame>(wire.clone()).is_err());
+        assert!(serde_json::from_value::<ResponseFrame>(wire).is_err());
+    }
+
+    #[test]
+    fn result_and_error_together_rejected() {
+        for result in [serde_json::Value::Null, serde_json::json!({ "pong": true })] {
+            let wire = serde_json::json!({
+                "id": "rpc-5",
+                "result": result,
+                "error": { "code": "protocol_error", "message": "test error" },
+            });
+            assert!(serde_json::from_value::<Frame>(wire.clone()).is_err());
+            assert!(serde_json::from_value::<ResponseFrame>(wire).is_err());
+        }
+    }
+
+    #[test]
+    fn duplicate_result_including_null_rejected() {
+        for wire in [
+            r#"{"id":"rpc-6","result":null,"result":1}"#,
+            r#"{"id":"rpc-6","result":1,"result":null}"#,
+        ] {
+            assert!(serde_json::from_str::<Frame>(wire).is_err());
+            assert!(serde_json::from_str::<ResponseFrame>(wire).is_err());
+        }
+    }
+
+    #[test]
+    fn null_error_is_rejected() {
+        for wire in [
+            r#"{"id":"rpc-null-error","error":null}"#,
+            r#"{"id":"rpc-null-error","result":null,"error":null}"#,
+            r#"{"id":"rpc-null-error","result":true,"error":null}"#,
+        ] {
+            assert!(serde_json::from_str::<Frame>(wire).is_err());
+            assert!(serde_json::from_str::<ResponseFrame>(wire).is_err());
+        }
+    }
+
+    #[test]
+    fn non_null_results_and_errors_decode_consistently() {
+        for wire in [
+            serde_json::json!({ "id": "rpc-7", "result": false }),
+            serde_json::json!({ "id": "rpc-7", "result": 0 }),
+            serde_json::json!({ "id": "rpc-7", "result": "" }),
+            serde_json::json!({ "id": "rpc-7", "result": [] }),
+            serde_json::json!({ "id": "rpc-7", "result": {} }),
+            serde_json::json!({
+                "id": "rpc-7",
+                "error": { "code": "protocol_error", "message": "test error" },
+            }),
+        ] {
+            let response: ResponseFrame = serde_json::from_value(wire.clone()).unwrap();
+            let frame: Frame = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(frame, Frame::Response(response.clone()));
+            assert_eq!(serde_json::to_value(response).unwrap(), wire);
+        }
     }
 }

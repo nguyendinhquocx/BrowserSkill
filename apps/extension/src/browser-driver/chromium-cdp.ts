@@ -44,6 +44,15 @@ import {
 
 export type CdpDebuggee = chrome.debugger.Debuggee & { sessionId?: string };
 
+/** Guards checked at native dispatch, after any asynchronous connection setup. */
+export interface CdpDispatchGuard {
+  signal?: AbortSignal;
+  /** Only use this live attachment; never reconnect a cleanup command. */
+  attachmentId?: string;
+  /** Called immediately before native send, never for a cancelled or stale command. */
+  onDispatch?(): void;
+}
+
 /**
  * Minimal slice of `chrome.debugger` the rest of the extension
  * depends on. Stays as an explicit interface so vitest can inject a
@@ -350,6 +359,29 @@ export class ChromiumCdp {
     }
   }
 
+  async sendGuarded<T = unknown>(
+    target: CdpTarget,
+    method: string,
+    params: object | undefined,
+    guard: CdpDispatchGuard,
+  ): Promise<T> {
+    guard.signal?.throwIfAborted();
+    if (guard.attachmentId === undefined) await this.ensureAttached(target.tabId);
+    try {
+      return (await this.command(target, method, params ?? {}, undefined, () => {
+        guard.signal?.throwIfAborted();
+        if (
+          guard.attachmentId !== undefined &&
+          this.getAttachmentId(target.tabId) !== guard.attachmentId
+        )
+          throw new Error("Debugger attachment changed before dispatch");
+        guard.onDispatch?.();
+      })) as T;
+    } catch (err) {
+      throw normalizeError(err);
+    }
+  }
+
   async getFrameGraph(tabId: number): Promise<CdpFrameGraph> {
     await this.ensureAttached(tabId);
     // Ordinary configuration failures leave the graph to the root tree. A
@@ -531,7 +563,9 @@ export class ChromiumCdp {
   }
 
   /** Detach if attached; never throws. */
-  async detach(tabId: number): Promise<void> {
+  async detach(tabId: number, expectedAttachmentId?: string): Promise<void> {
+    if (expectedAttachmentId !== undefined && this.getAttachmentId(tabId) !== expectedAttachmentId)
+      return;
     this.attachmentVersions.set(tabId, (this.attachmentVersions.get(tabId) ?? 0) + 1);
     const existing = this.detachInFlight.get(tabId);
     if (existing) {
@@ -671,11 +705,15 @@ export class ChromiumCdp {
     method: string,
     params: object,
     readTimeoutMs?: number,
+    beforeDispatch?: () => void,
   ): Promise<unknown> {
     return this.readGate.run(
       target,
       method,
-      () => this.api.sendCommand(target, method, params),
+      () => {
+        beforeDispatch?.();
+        return this.api.sendCommand(target, method, params);
+      },
       readTimeoutMs,
     );
   }
