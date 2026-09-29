@@ -56,6 +56,35 @@ pub(super) fn spawn(exe: &Path, args: &StartArgs, predecessor_pid: Option<u32>) 
     Ok(child)
 }
 
+/// Whether [`spawn`] can start a daemon outside this process's Jobs. Creates
+/// `exe` suspended with the same flags, checks it left every Job, and
+/// terminates it without ever letting it run.
+pub(super) fn check_breakaway(exe: &Path) -> Result<()> {
+    let command_line = command_line([exe.as_os_str(), OsStr::new("--version")].into_iter());
+    let env: Vec<_> = std::env::vars_os().collect();
+    let input = File::open("NUL").context("open probe stdin")?;
+    let output = File::options()
+        .write(true)
+        .open("NUL")
+        .context("open probe output")?;
+    let mut probe = windows_process::spawn(
+        exe.as_os_str(),
+        &command_line,
+        &env,
+        [&input, &output, &output],
+        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB | CREATE_SUSPENDED,
+    )
+    .context(DETACH_HINT)?;
+    let outside = probe.outside_job();
+    let _ = probe.kill();
+    let _ = probe.wait();
+    anyhow::ensure!(
+        outside.context("check the probe's Job membership")?,
+        "{DETACH_HINT}: breakaway from an outer Job is not allowed"
+    );
+    Ok(())
+}
+
 /// Quote argv directly for the Windows CRT, without invoking a shell. Preserve
 /// UTF-16 paths, embedded quotes and backslashes before a closing quote.
 pub(super) fn command_line<'a>(args: impl Iterator<Item = &'a OsStr>) -> OsString {

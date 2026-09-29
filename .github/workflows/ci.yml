@@ -59,7 +59,10 @@ jobs:
         run: cargo test -p bsk --lib --locked daemon::lockfile::tests
 
       - name: Run Windows update tests
-        run: cargo test -p bsk --lib --locked cli::update::tests
+        run: |
+          cargo test -p bsk --lib --locked cli::update::
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p bsk --test auto_update_policy --locked
 
       - name: Run Windows update and cancellation process tests
         run: cargo test -p bsk --test windows_update --test windows_parent_cancel --locked

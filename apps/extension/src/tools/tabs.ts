@@ -8,6 +8,7 @@ import {
   OVERLAY_AGENT_OVERLAY_RESET,
   type OverlayAgentOverlayResetMessage,
 } from "@/lib/overlay-bridge";
+import { nextOverlayVersion } from "@/lib/overlay-version";
 import {
   isAgentControlledTab,
   type SessionContext,
@@ -182,6 +183,7 @@ export const chromeAgentOverlayResetApi: AgentOverlayResetApi = {
     const message: OverlayAgentOverlayResetMessage = {
       type: OVERLAY_AGENT_OVERLAY_RESET,
       sessionId,
+      ...nextOverlayVersion(),
     };
     await chrome.tabs.sendMessage(tabId, message);
   },

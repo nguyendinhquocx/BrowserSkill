@@ -1066,6 +1066,7 @@ fn map_start_error(err: StartSessionError) -> RpcError {
         StartSessionError::Cancelled => ErrorCode::Cancelled,
         StartSessionError::CleanupFailed { .. } => ErrorCode::ProtocolError,
         StartSessionError::TransportClosed => ErrorCode::ProtocolError,
+        StartSessionError::ExtensionUnresponsive => ErrorCode::Timeout,
         StartSessionError::ExtensionError(inner) => inner.code,
     };
     let message = err.to_string();
@@ -1090,6 +1091,10 @@ fn map_start_error(err: StartSessionError) -> RpcError {
             "agent_window_id": agent_window_id,
         })),
         StartSessionError::ExtensionError(inner) => inner.data.clone(),
+        StartSessionError::ExtensionUnresponsive => {
+            Some(serde_json::json!({ "reason": "extension_unresponsive" }))
+        }
+        StartSessionError::TransportClosed => Some(super::browsers::extension_disconnected_data()),
         _ => None,
     };
     RpcError {
@@ -1191,10 +1196,12 @@ fn map_stop_error(err: StopSessionError) -> RpcError {
         StopSessionError::ExtensionError(inner) => inner.code,
         StopSessionError::ReturnFailures(_) => ErrorCode::CdpFailed,
     };
+    let data = matches!(err, StopSessionError::TransportClosed)
+        .then(super::browsers::extension_disconnected_data);
     RpcError {
         code,
         message: err.to_string(),
-        data: None,
+        data,
     }
 }
 

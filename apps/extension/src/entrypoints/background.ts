@@ -27,6 +27,7 @@ import {
   type OverlayMessage,
   type OverlayMode,
 } from "@/lib/overlay-bridge";
+import { nextOverlayVersion } from "@/lib/overlay-version";
 import { POPUP_PORT_NAME, type PopupInbound, type PopupOutbound } from "@/lib/popup-bridge";
 import { recordFrameCoordinator } from "@/lib/recording/frame-coordinator";
 import { attachSessionsLiveFlag } from "@/lib/sessions-live-flag";
@@ -99,7 +100,6 @@ export default defineBackground(() => {
   });
   const sessionsLive = attachSessionsLiveFlag({ manager: sessions });
   const popupSnapshotRefreshers = new Set<() => void>();
-  let overlayGeneration = 0;
   const controlModes = new Map<string, OverlayMode>();
 
   watchRemoteAuthorization();
@@ -140,7 +140,6 @@ export default defineBackground(() => {
   function setControlMode(sessionId: string, mode: OverlayMode): void {
     if (controlModes.get(sessionId) === mode) return;
     controlModes.set(sessionId, mode);
-    overlayGeneration += 1;
     const ctx = sessions.get(sessionId);
     if (ctx) void pushOverlayStateForWindow(ctx.agentWindowId);
   }
@@ -152,14 +151,14 @@ export default defineBackground(() => {
         type: OVERLAY_AGENT_STATE,
         sessionId: null,
         mode: "hidden",
-        generation: overlayGeneration,
+        ...nextOverlayVersion(),
       };
     }
     return {
       type: OVERLAY_AGENT_STATE,
       sessionId: ctx.sessionId,
       mode: controlModes.get(ctx.sessionId) ?? "control",
-      generation: overlayGeneration,
+      ...nextOverlayVersion(),
     };
   }
 
@@ -177,7 +176,7 @@ export default defineBackground(() => {
       type: OVERLAY_AGENT_STATE,
       sessionId: null,
       mode: "hidden",
-      generation: overlayGeneration,
+      ...nextOverlayVersion(),
     };
   }
 
@@ -221,7 +220,6 @@ export default defineBackground(() => {
     for (const sessionId of controlModes.keys()) {
       if (!liveSessionIds.has(sessionId)) controlModes.delete(sessionId);
     }
-    overlayGeneration += 1;
     pushAllAgentOverlayStates();
     for (const refresh of popupSnapshotRefreshers) refresh();
   }
