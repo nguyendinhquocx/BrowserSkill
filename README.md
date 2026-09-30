@@ -149,7 +149,7 @@ Use `bsk --help` or `bsk <command> --help` for command options. Always stop your
 
 </details>
 
-If your agent sandbox removes background processes after each command, use the [sandbox setup guide](docs/sandboxed-agents.md). It explains how to keep the daemon in a persistent host environment and connect with shared `BSK_HOME` and `BSK_AUTO_START=0`.
+In WorkBuddy/CodeBuddy, or hosts that reap command children, the agent should reuse an existing daemon or run `bsk daemon start --foreground` in a managed background task, then verify it from a separate tool call. Follow the [host setup guide](docs/sandboxed-agents.md) for shared `BSK_HOME`, `BSK_AUTO_START=0`, and the independent-terminal fallback when the host cannot keep a task alive.
 
 ## DeepSeek Harness plugin
 

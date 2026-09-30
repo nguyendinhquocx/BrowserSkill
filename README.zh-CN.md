@@ -149,7 +149,7 @@ bsk session stop <id>
 
 </details>
 
-如果 Agent 沙盒会在每条命令后回收后台进程，请使用[沙盒配置指南](docs/sandboxed-agents.md)：在宿主环境保持 daemon 运行，Agent 通过共享的 `BSK_HOME` 和 `BSK_AUTO_START=0` 连接。
+在 WorkBuddy/CodeBuddy 或会回收命令子进程的宿主中，Agent 应先复用已有 daemon；需要启动时，在宿主管理的后台任务中运行 `bsk daemon start --foreground`，并在另一条工具调用中验证连接。[宿主配置指南](docs/sandboxed-agents.md)说明了如何共用 `BSK_HOME`、设置 `BSK_AUTO_START=0`，以及宿主无法维持任务时的独立终端兜底方式。
 
 ## DeepSeek Harness 插件
 
