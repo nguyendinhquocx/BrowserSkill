@@ -37,6 +37,7 @@ pub mod status;
 pub mod tab;
 pub mod update;
 pub mod upload;
+pub mod video;
 pub mod waits;
 pub mod wheel;
 pub mod window;
@@ -65,7 +66,7 @@ use crate::cli::snapshot::SnapshotArgs;
 use crate::cli::tab::TabCmd;
 use crate::cli::update::UpdateArgs;
 use crate::cli::upload::UploadArgs;
-use crate::cli::waits::{WaitForNavigationArgs, WaitMsArgs};
+use crate::cli::waits::{WaitForElementArgs, WaitForNavigationArgs, WaitMsArgs};
 use crate::cli::wheel::WheelArgs;
 use crate::cli::window::WindowCmd;
 
@@ -219,6 +220,10 @@ pub enum Command {
     #[command(name = "wait-for-navigation")]
     WaitForNavigation(WaitForNavigationArgs),
 
+    /// Wait until an element becomes visible / hidden / attached / detached.
+    #[command(name = "wait-for-element")]
+    WaitForElement(WaitForElementArgs),
+
     /// Sleep for a duration on the daemon side.
     #[command(name = "wait-ms")]
     WaitMs(WaitMsArgs),
@@ -229,6 +234,8 @@ pub enum Command {
 
     /// Record user actions into a semantic `trace.json` textbook for LLMs.
     Record(RecordCmd),
+    /// Record a task tab to MP4 and save it to an explicit destination.
+    Video(video::VideoCmd),
 }
 
 #[derive(Debug, Clone, Args, Default)]

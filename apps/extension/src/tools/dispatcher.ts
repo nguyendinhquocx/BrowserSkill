@@ -41,10 +41,14 @@ import type {
   SelectParams,
   SnapshotParams,
   UploadParams,
+  WaitForElementParams,
   WaitForNavigationParams,
   WheelParams,
 } from "@/transport/types";
 import { isRequestFrame } from "@/transport/types";
+import { videoError } from "@/video/errors";
+import type { VideoManager } from "@/video/manager";
+import type { VideoParams } from "@/video/types";
 import { auditContext } from "./audit-context";
 import { prepareBackgroundExecution } from "./background-execution";
 import { handleConsole } from "./console";
@@ -111,7 +115,7 @@ import {
   type TabSelectParams,
 } from "./tabs";
 import { handleUpload } from "./upload";
-import { handleWaitForNavigation } from "./waits";
+import { handleWaitForElement, handleWaitForNavigation } from "./waits";
 import { handleWheel } from "./wheel";
 import { handleWindowResize, type WindowResizeParams } from "./window";
 
@@ -134,6 +138,7 @@ interface HoverLatchScope {
 }
 
 export interface DispatcherDeps {
+  video?: VideoManager;
   debug?: DebugManager;
   transport: Transport;
   sessions: SessionManager;
@@ -177,6 +182,7 @@ const OPENS_TABS = new Set(["tool.click", "tool.press"]);
  * takes the fast path.
  */
 export class ToolDispatcher {
+  private readonly video?: VideoManager;
   private readonly debug?: DebugManager;
   private readonly transport: Transport;
   private readonly sessions: SessionManager;
@@ -203,6 +209,7 @@ export class ToolDispatcher {
   readonly inflightAbortControllers = new Map<string, AbortController>();
 
   constructor(deps: DispatcherDeps) {
+    this.video = deps.video;
     this.debug = deps.debug;
     this.transport = deps.transport;
     this.sessions = deps.sessions;
@@ -427,6 +434,17 @@ export class ToolDispatcher {
     );
     if (preparationError) return preparationError;
     switch (req.method) {
+      case "tool.video":
+        if (!this.video)
+          return {
+            code: "unsupported",
+            message: "Video recording requires a compatible extension",
+          };
+        try {
+          return await this.video.rpc(req.params as VideoParams, signal);
+        } catch (error) {
+          return videoError(error, signal?.aborted ? "cancelled" : "cdp_failed");
+        }
       case "tool.debug":
         if (!this.debug)
           return {
@@ -446,6 +464,10 @@ export class ToolDispatcher {
           preferences: this.interactionPreferences,
         });
       case "tool.session_stop": {
+        if (this.video)
+          await this.video
+            .stopSession((req.params as SessionStopParams).session_id)
+            .catch((error) => console.warn("Video finalization failed during task cleanup", error));
         this.debug?.releaseSession((req.params as SessionStopParams).session_id);
         await this.screenshotExports.releaseSession((req.params as SessionStopParams).session_id);
         await this.releaseHoverLatch((req.params as SessionStopParams).session_id);
@@ -809,6 +831,12 @@ export class ToolDispatcher {
           req.params as EvaluateParams,
           this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
         );
+      case "tool.wait_for_element":
+        return handleWaitForElement(
+          this.sessions,
+          req.params as WaitForElementParams,
+          this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi, signal } : undefined,
+        );
       case "tool.wait_for_navigation":
         return handleWaitForNavigation(
           this.sessions,
@@ -829,13 +857,23 @@ export class ToolDispatcher {
           notificationCopy: this.helpNotificationCopy?.(),
           signal,
         });
-      case "tool.record_start":
-        return this.recording
+      case "tool.record_start": {
+        const release = this.video?.reserveActionRecording(
+          (req.params as RecordStartParams).session_id,
+        );
+        if (this.video && !release)
+          return {
+            code: "invalid_params",
+            message: "Stop video recording before starting action recording",
+          };
+        const started = this.recording
           ? handleRecordStart(this.sessions, req.params as RecordStartParams, {
               ...this.recording,
               signal,
             })
-          : recordingRuntimeUnavailable();
+          : Promise.resolve(recordingRuntimeUnavailable());
+        return release ? started.finally(release) : started;
+      }
       case "tool.record_stop":
         return this.recording
           ? handleRecordStop(this.sessions, req.params as RecordStopParams, {
