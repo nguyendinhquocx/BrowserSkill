@@ -15,10 +15,18 @@ import { VIDEO_RETENTION_MS } from '@/video/types';
 const host = new BrowserVideoHost();
 const store = new VideoArtifactStore();
 chrome.runtime.onInstalled.addListener(() => {});
-globalThis.runEncoder = async (crash = false) => {
-  const canvas=new OffscreenCanvas(320,180),ctx=canvas.getContext('2d');
-  const image=async(color)=>{ctx.fillStyle=color;ctx.fillRect(0,0,320,180);const bytes=new Uint8Array(await (await canvas.convertToBlob({type:'image/png'})).arrayBuffer());return btoa(String.fromCharCode(...bytes));};
-  const recording={recording_id:'vid_'+crypto.randomUUID().replaceAll('-',''),session_id:'test',tab_id:1,title:'Encoder regression',state:'starting',quality:'standard',created_at:Date.now(),expires_at:Date.now()+VIDEO_RETENTION_MS,max_duration_ms:4000,duration_ms:0,byte_size:0,width:0,height:0,frames:0,dropped_frames:0,exported:false,owner:'test',capability:'test-capability',request_id:'test-request'};
+globalThis.runEncoder = async (crash = false, width = 320, height = 180, quality = 'standard') => {
+  const canvas=new OffscreenCanvas(width,height),ctx=canvas.getContext('2d');
+  const image = async (color) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, width, height);
+    const bytes = new Uint8Array(await (await canvas.convertToBlob({type:'image/png'})).arrayBuffer());
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 32768)
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+    return btoa(binary);
+  };
+  const recording={recording_id:'vid_'+crypto.randomUUID().replaceAll('-',''),session_id:'test',tab_id:1,title:'Encoder regression',state:'starting',quality,created_at:Date.now(),expires_at:Date.now()+VIDEO_RETENTION_MS,max_duration_ms:4000,duration_ms:0,byte_size:0,width:0,height:0,frames:0,dropped_frames:0,exported:false,owner:'test',capability:'test-capability',request_id:'test-request'};
   await store.put(recording);
   await host.request({action:'start',recording,image:await image('#ff0000')});
   await new Promise(resolve=>setTimeout(resolve,1200));
@@ -202,6 +210,31 @@ describe.skipIf(!process.env.BSK_VIDEO_CHROME)("video encoder browser regression
             `inspectVideo(${JSON.stringify(recovered.value.id)})`,
           );
           expect(salvaged.duration).toBeGreaterThan(0);
+
+          // Clear-quality frames can exceed level 4.2 despite a <=1920 longest edge.
+          for (const [width, height] of [
+            [1920, 1154],
+            [1920, 1200],
+            [1200, 1920],
+            [1920, 1920],
+          ]) {
+            const recorded = await evaluate<{
+              id: string;
+              result: { state: string; completeness: string; error?: string };
+            }>(background.sessionId, `runEncoder(false, ${width}, ${height}, 'clear')`);
+            expect(recorded.result.error).toBeUndefined();
+            expect(recorded.result).toMatchObject({ state: "ready", completeness: "complete" });
+            const playback = await evaluate<typeof result>(
+              attached.sessionId,
+              `inspectVideo(${JSON.stringify(recorded.id)})`,
+            );
+            expect(playback).toMatchObject({ width, height });
+            expect(playback.duration).toBeGreaterThanOrEqual(2.3);
+            expect(playback.pixels[0][0]).toBeGreaterThan(240);
+            expect(playback.pixels[0][2]).toBeLessThan(15);
+            expect(playback.pixels[1][0]).toBeLessThan(15);
+            expect(playback.pixels[1][2]).toBeGreaterThan(240);
+          }
         },
       );
     } finally {

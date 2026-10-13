@@ -10,10 +10,11 @@ import {
   StreamTarget,
   type StreamTargetChunk,
 } from "mediabunny";
+import { videoEncoderConfig } from "./encoder-config";
 import { VideoError } from "./errors";
 import type { VideoSuspension } from "./host-protocol";
 import { VideoArtifactStore, videoDirectory } from "./store";
-import { VideoTimeline, videoDimensions } from "./timeline";
+import { VideoTimeline } from "./timeline";
 import {
   completeStop,
   type StoredVideo,
@@ -189,23 +190,15 @@ export class VideoEncoderPipeline {
   async start(image: string): Promise<StoredVideo> {
     const bitmap = await decodeImage(image);
     const preset = VIDEO_PRESETS[this.recording.quality];
-    const size = videoDimensions(bitmap.width, bitmap.height, preset.maxDimension);
     try {
       if (typeof VideoEncoder === "undefined")
         throw new VideoError({
           code: "unsupported",
           message: "This browser does not support video encoding",
         });
-      // Baseline AVC, level 4.2, AVCC packets for an MP4 container. Test the exact
-      // dimensions rather than treating API presence as codec availability.
-      const config: VideoEncoderConfig = {
-        codec: "avc1.42002a",
-        ...size,
-        bitrate: preset.bitrate,
-        framerate: preset.fps,
-        latencyMode: "realtime",
-        avc: { format: "avc" },
-      };
+      const config = videoEncoderConfig(bitmap.width, bitmap.height, this.recording.quality);
+      const size = { width: config.width, height: config.height };
+      // Test the exact dimensions rather than treating API presence as codec availability.
       const support = await VideoEncoder.isConfigSupported(config);
       if (!support.supported)
         throw new VideoError({

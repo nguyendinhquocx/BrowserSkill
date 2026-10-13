@@ -9,6 +9,7 @@ import { defineTool, type ParameterSchemaSpec, type ToolDefinition } from "@deep
 import { DEBUG_PARAMETERS } from "./debug-tool";
 import {
   BROWSER_PARAM,
+  ELEMENT_WAIT_PARAMS,
   SESSION_PARAM,
   SESSION_STOP_PARAMS,
   TAB_ID_PARAM,
@@ -142,14 +143,17 @@ const BROWSER_TOOL_SPECS: BrowserToolSpec[] = [
     name: "browser_page",
     description:
       "Navigate and wait on the active Agent Window tab. Actions: navigate, back, forward, reload, " +
-      "wait. navigate requires url; reload optionally accepts hard; navigation actions accept " +
-      "waitUntil/timeoutMs. Observe again after a meaningful page change before reusing refs.",
+      "wait, wait-for-element. navigate requires url; reload optionally accepts hard; navigation " +
+      "actions and wait accept waitUntil/timeoutMs. wait-for-element requires target and accepts " +
+      "state/pollMs; its timeoutMs defaults to 10000 (max 300000). Check satisfied: false means " +
+      "timeout, not success. Observe again after a meaningful page change before reusing refs.",
     actions: {
       navigate: "page.navigate",
       back: "page.back",
       forward: "page.forward",
       reload: "page.reload",
       wait: "page.wait",
+      "wait-for-element": "page.wait-for-element",
     },
     parameters: {
       session: SESSION_PARAM,
@@ -158,6 +162,7 @@ const BROWSER_TOOL_SPECS: BrowserToolSpec[] = [
       waitUntil: WAIT_UNTIL_PARAM,
       timeoutMs: TIMEOUT_MS_PARAM,
       hard: { type: "boolean", description: "Bypass cache for reload." },
+      ...ELEMENT_WAIT_PARAMS,
     },
   },
   {
