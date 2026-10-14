@@ -31,7 +31,7 @@ export interface AgentWindowCreation {
 export interface AgentWindowCreateOptions {
   /** Optional outer size in CSS pixels. */
   size?: { width: number; height: number };
-  /** Defaults to true so existing sessions keep visible Agent Windows. */
+  /** Background by default; explicit viewing and human help may take focus. */
   focused?: boolean;
 }
 
@@ -42,7 +42,7 @@ export const chromeAgentWindowApi: AgentWindowApi = {
   async create(url: string, opts: AgentWindowCreateOptions = {}): Promise<AgentWindowCreation> {
     const win = await chrome.windows.create({
       type: "normal",
-      focused: opts.focused ?? true,
+      focused: opts.focused ?? false,
       url,
       ...(opts.size ? { width: opts.size.width, height: opts.size.height } : {}),
     });

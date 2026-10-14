@@ -50,7 +50,7 @@ pub struct SessionStartParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
     /// Whether the new Agent Window should take focus. Omitted means the
-    /// extension's default (`true`) for compatibility with older clients.
+    /// extension's default (`false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focused: Option<bool>,
     /// Legacy input, ignored. Browser settings decide both prompts for every session.

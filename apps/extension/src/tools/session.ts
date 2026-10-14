@@ -59,7 +59,7 @@ export interface SessionStartParams {
   width?: number;
   /** Optional Agent Window outer height in CSS pixels (100..=7680). */
   height?: number;
-  /** Defaults to true so existing clients preserve visible Agent Windows. */
+  /** Background by default; true explicitly opens the window in front. */
   focused?: boolean;
   /** Legacy input accepted for compatibility; browser settings always decide. */
   unattended?: boolean;

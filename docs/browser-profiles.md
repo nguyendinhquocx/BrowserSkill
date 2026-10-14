@@ -55,7 +55,7 @@ routing identifiers, not independent proof of a filesystem path.
 Use the verified popup instance ID in the plugin's session tool:
 
 ```text
-browser_session({ action: "start", browser: "<verified-instance-id>" })
+bsk_session({ action: "start", browser: "<verified-instance-id>" })
 ```
 
 **Copy instructions** includes this tool call alongside the CLI command.

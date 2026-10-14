@@ -37,6 +37,7 @@ import { attachLongScreenshot } from "@/long-screenshot/background";
 import { createDisconnectCleanup } from "@/session-manager/disconnect-cleanup";
 import { attachSessionEventHandler } from "@/session-manager/event-handler";
 import { isAgentControlledTab, SessionManager } from "@/session-manager/manager";
+import { AgentWindowRouting } from "@/session-manager/window-routing";
 import {
   attachBorrowNotificationButtonHandler,
   attachBorrowNotificationClickHandler,
@@ -46,10 +47,12 @@ import {
   requestBorrowConfirmation,
 } from "@/tools/borrow-confirmation";
 import { ToolDispatcher } from "@/tools/dispatcher";
+import { hasActiveHelp } from "@/tools/human-loop";
 import {
   attachRecordFinishListener,
   attachRecordQueryListener,
   attachRecordStepListener,
+  hasActiveRecording,
   type RecordRuntimeDeps,
 } from "@/tools/record";
 import { cdpBlockedUrlReason, chromeTabsApi } from "@/tools/shared";
@@ -85,6 +88,11 @@ export default defineBackground(() => {
     },
   });
   const sessions = new SessionManager({ remote: () => remoteEndpoint !== null });
+  const windowRouting = new AgentWindowRouting(
+    sessions,
+    chrome,
+    (id) => hasActiveHelp(id) || hasActiveRecording(id),
+  );
   attachLongScreenshot({
     isTabBusy: (tabId) => sessions.list().some((session) => isAgentControlledTab(session, tabId)),
   });
@@ -272,6 +280,7 @@ export default defineBackground(() => {
   }
 
   function onOverlaySessionStateChanged(): void {
+    windowRouting.sync();
     debug.sync();
     video.sync();
     void sessionsLive.syncFromManager();

@@ -77,22 +77,22 @@ describe("chromeAgentWindowApi.create", () => {
     });
   });
 
-  it("focuses Agent Windows by default", async () => {
+  it("opens Agent Windows in the background by default", async () => {
     await chromeAgentWindowApi.create(AGENT_WINDOW_HOME);
 
     expect(create).toHaveBeenCalledWith({
       type: "normal",
-      focused: true,
+      focused: false,
       url: AGENT_WINDOW_HOME,
     });
   });
 
-  it("can create an Agent Window without stealing focus", async () => {
-    await chromeAgentWindowApi.create(AGENT_WINDOW_HOME, { focused: false });
+  it("can explicitly bring an Agent Window to the foreground", async () => {
+    await chromeAgentWindowApi.create(AGENT_WINDOW_HOME, { focused: true });
 
     expect(create).toHaveBeenCalledWith({
       type: "normal",
-      focused: false,
+      focused: true,
       url: AGENT_WINDOW_HOME,
     });
   });
@@ -104,7 +104,7 @@ describe("chromeAgentWindowApi.create", () => {
 
     expect(create).toHaveBeenCalledWith({
       type: "normal",
-      focused: true,
+      focused: false,
       url: AGENT_WINDOW_HOME,
       width: 1280,
       height: 800,

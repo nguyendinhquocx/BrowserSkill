@@ -13,7 +13,7 @@
       ]
     },
     "focused": {
-      "description": "Whether the new Agent Window should take focus. Omitted means the extension's default (`true`) for compatibility with older clients.",
+      "description": "Whether the new Agent Window should take focus. Omitted means the extension's default (`false`).",
       "type": [
         "boolean",
         "null"

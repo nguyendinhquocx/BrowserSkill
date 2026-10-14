@@ -19,6 +19,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-protocol:
+    name: Windows signing protocol and release manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 scripts/windows-release.test.py
+      - run: node --test scripts/render-version-json.test.mjs
+
   rust:
     name: Rust fmt, clippy, tests
     runs-on: ubuntu-latest

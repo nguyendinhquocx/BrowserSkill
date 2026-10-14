@@ -13,6 +13,7 @@ import type {
   DownloadParams,
   EmulateParams,
   EvaluateParams,
+  ExtractParams,
   FillParams,
   FocusParams,
   GetHtmlParams,
@@ -57,6 +58,7 @@ import { handleDownload } from "./download";
 import { type EmulateCdpRunner, handleEmulate } from "./emulate";
 import { classifyCdpError } from "./errors";
 import { handleEvaluate } from "./evaluate";
+import { handleExtract } from "./extract";
 import { handleRequestHelp } from "./human-loop";
 import {
   handleBlur,
@@ -615,6 +617,13 @@ export class ToolDispatcher {
           signal,
         );
       }
+      case "tool.extract":
+        return handleExtract(
+          this.sessions,
+          req.params as ExtractParams,
+          this.cdp ? { cdp: this.cdp, tabsApi: chromeTabsApi } : undefined,
+          signal,
+        );
       case "tool.get_html":
         return handleGetHtml(
           this.sessions,

@@ -33,6 +33,7 @@ vi.mock("@/lib/recording/frame-coordinator");
 vi.mock("@/lib/sessions-live-flag");
 vi.mock("@/long-screenshot/background");
 vi.mock("@/session-manager/event-handler");
+vi.mock("@/session-manager/window-routing");
 vi.mock("@/session-manager/agent-window", () => ({
   AGENT_WINDOW_HOME: "about:blank",
   chromeAgentWindowApi: {

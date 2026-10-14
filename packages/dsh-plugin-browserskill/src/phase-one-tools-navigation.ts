@@ -106,7 +106,7 @@ export function registerPhaseOneNavigationTools(
         if (args.pollMs !== undefined && (args.pollMs < 16 || args.pollMs > 2000)) {
           throw new Error("pollMs must be in 16..2000");
         }
-        const sessionId = registry.resolve(args.session, "browser_page(action=wait-for-element)");
+        const sessionId = registry.resolve(args.session, "bsk_page(action=wait-for-element)");
         const state = args.state ?? "visible";
         const cmdArgs = [
           "wait-for-element",
@@ -242,7 +242,7 @@ export function registerPhaseOneNavigationTools(
       },
       async execute(args, exec) {
         requirePositive(args.timeoutMs, "timeoutMs");
-        const sessionId = registry.resolve(args.session, "browser_page(action=reload)");
+        const sessionId = registry.resolve(args.session, "bsk_page(action=reload)");
         const cmdArgs = ["reload", "--session", sessionId];
         appendTabId(cmdArgs, args.tabId);
         appendWaitOptions(cmdArgs, args.waitUntil, args.timeoutMs);
@@ -305,7 +305,7 @@ export function registerPhaseOneNavigationTools(
       },
       async execute(args, exec) {
         requirePositive(args.timeoutMs, "timeoutMs");
-        const sessionId = registry.resolve(args.session, "browser_page(action=wait)");
+        const sessionId = registry.resolve(args.session, "bsk_page(action=wait)");
         const timeoutMs = args.timeoutMs ?? 30_000;
         const cmdArgs = ["wait-for-navigation", "--session", sessionId];
         appendTabId(cmdArgs, args.tabId);

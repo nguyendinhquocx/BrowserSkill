@@ -14,6 +14,7 @@ import {
   type SessionContext,
   type SessionManager,
 } from "@/session-manager/manager";
+import { beginTabCreation } from "@/session-manager/tab-creation";
 import { detectBrowserMeta } from "@/transport/handshake";
 import type { RpcError } from "@/transport/types";
 import { rpcError } from "./errors";
@@ -381,6 +382,19 @@ function buildCreateProps(
  * Returns the created tab on success, or an `RpcError` on failure.
  */
 async function createTabAndCleanup(
+  ctx: SessionContext,
+  deps: TabManagementDeps,
+  createProps: chrome.tabs.CreateProperties,
+): Promise<CreatedChromeTab | RpcError> {
+  const finishCreation = beginTabCreation(ctx);
+  try {
+    return await createAndClaimTab(ctx, deps, createProps);
+  } finally {
+    finishCreation();
+  }
+}
+
+async function createAndClaimTab(
   ctx: SessionContext,
   deps: TabManagementDeps,
   createProps: chrome.tabs.CreateProperties,

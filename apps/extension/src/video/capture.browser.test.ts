@@ -730,12 +730,12 @@ describe.skipIf(!process.env.BSK_VIDEO_CHROME || !process.env.BSK_VIDEO_BSK)(
             // navigation and exports after its owned session is gone.
             const dsh = await createDshVideoFixture(executable, env, path.join(directory, "dsh"));
             try {
-              const task = await dsh.call<{ sessionId: string }>("browser_session", {
+              const task = await dsh.call<{ sessionId: string }>("bsk_session", {
                 action: "start",
               });
               const started = await dsh.call<{
                 recording: { recording_id: string; state: string; tab_id: number };
-              }>("browser_inspect", {
+              }>("bsk_inspect", {
                 action: "video",
                 videoAction: "start",
                 session: task.sessionId,
@@ -743,7 +743,7 @@ describe.skipIf(!process.env.BSK_VIDEO_CHROME || !process.env.BSK_VIDEO_BSK)(
               });
               expect(started.recording.state).toBe("recording");
               const recordingId = started.recording.recording_id;
-              await dsh.call("browser_page", {
+              await dsh.call("bsk_page", {
                 action: "navigate",
                 session: task.sessionId,
                 url: `http://127.0.0.1:${address.port}/red`,
@@ -764,12 +764,12 @@ describe.skipIf(!process.env.BSK_VIDEO_CHROME || !process.env.BSK_VIDEO_BSK)(
               await new Promise((resolve) => setTimeout(resolve, 1200));
               const finished = await dsh.call<{
                 recording: { state: string; completeness: string; byte_size: number };
-              }>("browser_inspect", { action: "video", videoAction: "stop", recordingId });
+              }>("bsk_inspect", { action: "video", videoAction: "stop", recordingId });
               expect(finished.recording.state).toBe("ready");
               expect(finished.recording.completeness).toBe("complete");
-              await dsh.call("browser_session", { action: "stop", session: task.sessionId });
+              await dsh.call("bsk_session", { action: "stop", session: task.sessionId });
               const output = path.join(directory, "dsh.mp4");
-              await dsh.call("browser_inspect", {
+              await dsh.call("bsk_inspect", {
                 action: "video",
                 videoAction: "save",
                 recordingId,
@@ -777,7 +777,7 @@ describe.skipIf(!process.env.BSK_VIDEO_CHROME || !process.env.BSK_VIDEO_BSK)(
               });
               expect((await stat(output)).size).toBe(finished.recording.byte_size);
               await expect(
-                dsh.call("browser_inspect", {
+                dsh.call("bsk_inspect", {
                   action: "video",
                   videoAction: "save",
                   recordingId,
@@ -785,7 +785,7 @@ describe.skipIf(!process.env.BSK_VIDEO_CHROME || !process.env.BSK_VIDEO_BSK)(
                 }),
               ).rejects.toThrow(/Output exists/);
               const list = await dsh.call<{ recordings: { recording_id: string }[] }>(
-                "browser_inspect",
+                "bsk_inspect",
                 { action: "video", videoAction: "list" },
               );
               expect(list.recordings.map((value) => value.recording_id)).toEqual([recordingId]);

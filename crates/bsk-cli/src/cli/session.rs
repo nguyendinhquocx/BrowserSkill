@@ -76,9 +76,13 @@ pub struct SessionStartArgs {
     #[arg(long, value_parser = window_size)]
     pub height: Option<u32>,
 
-    /// Open the Agent Window in the background without stealing focus.
-    #[arg(long)]
+    /// Keep the Agent Window in the background (the default).
+    #[arg(long, conflicts_with = "focus")]
     pub no_focus: bool,
+
+    /// Bring the new Agent Window to the foreground.
+    #[arg(long)]
+    pub focus: bool,
 }
 
 /// Parse a `--width` / `--height` Agent Window dimension (CSS pixels).
@@ -244,7 +248,7 @@ fn run_start(sock: PathBuf, args: SessionStartArgs, format: Format) -> Result<()
             browser: args.browser,
             width: args.width,
             height: args.height,
-            focused: args.no_focus.then_some(false),
+            focused: Some(args.focus),
         },
     );
     waited.store(true, Ordering::SeqCst);
@@ -273,7 +277,7 @@ fn run_start(sock: PathBuf, args: SessionStartArgs, format: Format) -> Result<()
 
 /// Options for [`start_session`]: browser selection plus Agent Window
 /// creation hints. `None` fields keep the extension-side defaults
-/// (focused window, browser-chosen size).
+/// (background window, browser-chosen size).
 #[derive(Debug, Default, Clone)]
 pub struct SessionStartOptions {
     pub request_id: Option<String>,
@@ -299,7 +303,7 @@ pub fn start_session(sock: PathBuf, opts: SessionStartOptions) -> Result<StartRe
             browser_instance_id: opts.browser,
             width: opts.width,
             height: opts.height,
-            focused: opts.focused,
+            focused: Some(opts.focused.unwrap_or(false)),
         }),
         SESSION_START_IPC_TIMEOUT,
     )

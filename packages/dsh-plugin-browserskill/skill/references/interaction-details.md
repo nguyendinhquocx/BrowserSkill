@@ -2,10 +2,10 @@
 
 ## Element waits
 
-`browser_page` supports `action: "wait-for-element"` for an explicit element
+`bsk_page` supports `action: "wait-for-element"` for an explicit element
 condition. For example, if
 `@e2` is an observed loading indicator after the triggering action, use
-`browser_page({ action: "wait-for-element", target: "@e2", state: "hidden" })`,
+`bsk_page({ action: "wait-for-element", target: "@e2", state: "hidden" })`,
 then check `satisfied` and observe the result. Replace the example ref with the
 actual one. Skip waiting when the page is already ready.
 
@@ -50,5 +50,5 @@ Continuation uses the same capture without refresh/depth changes. New
 observe/snapshot or changed page identity invalidates it.
 
 Console/network are bounded read-only diagnostics; follow sequence cursors.
-Wait only for expected navigation. `browser_assist` resizes windows or emulates
+Wait only for expected navigation. `bsk_assist` resizes windows or emulates
 a device for one tab.
