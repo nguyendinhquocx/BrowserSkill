@@ -732,6 +732,13 @@ async function validateBorrowTarget(
   if (typeof tab.id !== "number" || typeof tab.windowId !== "number") {
     return { code: "not_found", message: `tab ${tabId} not found` };
   }
+  if (tab.incognito) {
+    return rpcError(
+      "permission_denied",
+      "incognito_borrow_disabled",
+      "Incognito tabs cannot be borrowed. Create a new tab in the session instead.",
+    );
+  }
   const owner = manager.findControllingSession(tabId);
   if (owner)
     return rpcError(
@@ -886,6 +893,13 @@ export async function handleTabBorrow(
   const ctxOrErr = lookupSession(manager, params, "tab_borrow");
   if (isRpcError(ctxOrErr)) return ctxOrErr;
   const ctx = ctxOrErr;
+  if (ctx.incognito) {
+    return rpcError(
+      "permission_denied",
+      "incognito_borrow_disabled",
+      "Incognito sessions cannot borrow tabs. Create a new tab in the session instead.",
+    );
+  }
   const bad = validatePositiveInt("tab_id", params.tab_id);
   if (bad) return bad;
   if (aborted(deps.signal, "tab_borrow")) {
@@ -1066,7 +1080,14 @@ async function chooseFallbackWindow(
     // returned tab in another session's Agent Window would let that
     // session write to it and, worse, see it destroyed when that session
     // stops and closes its window.
-    if (lastId !== null && lastId !== ctx.agentWindowId && !isAgentWindowId(lastId)) {
+    // Incognito windows also have type "normal", but cannot receive the
+    // non-incognito tabs accepted by tab_borrow.
+    if (
+      lastId !== null &&
+      !last.incognito &&
+      lastId !== ctx.agentWindowId &&
+      !isAgentWindowId(lastId)
+    ) {
       return { windowId: lastId, index: -1, created: false };
     }
   } catch (err) {
@@ -1080,6 +1101,7 @@ async function chooseFallbackWindow(
     const created = await windowsApi.create({
       url: NEW_TAB_DEFAULT_URL,
       focused: false,
+      incognito: false,
     });
     if (typeof created?.id !== "number") {
       return {

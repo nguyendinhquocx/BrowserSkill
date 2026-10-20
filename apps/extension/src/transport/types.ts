@@ -63,6 +63,7 @@ export type RpcErrorReason =
   | "restricted_tab_url"
   | "cdp_extension_access_denied"
   | "borrow_conflict"
+  | "incognito_borrow_disabled"
   | "borrow_in_progress"
   | "user_denied"
   | "confirmation_timeout"

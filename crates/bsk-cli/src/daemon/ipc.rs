@@ -948,6 +948,8 @@ fn tool_dispatch_transport_timeout(method: &Method, params: &Value) -> Result<Du
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CliSessionStartParams {
     #[serde(default)]
+    pub incognito: bool,
+    #[serde(default)]
     pub browser_instance_id: Option<String>,
     #[serde(default)]
     pub width: Option<u32>,
@@ -1065,6 +1067,7 @@ pub(super) async fn handle_session_start(
     let cancel = abort_guard.token().clone();
     let params: CliSessionStartParams = if params.is_null() {
         CliSessionStartParams {
+            incognito: false,
             browser_instance_id: None,
             width: None,
             height: None,
@@ -1096,6 +1099,7 @@ pub(super) async fn handle_session_start(
         &state.tool_queues,
         params.browser_instance_id.as_deref(),
         AgentWindowOptions {
+            incognito: params.incognito,
             size: window_size,
             focused: params.focused,
         },

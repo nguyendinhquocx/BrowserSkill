@@ -57,6 +57,7 @@ pub mod reason {
     pub const TAB_NOT_ACTIVE: &str = "tab_not_active";
     pub const CDP_EXTENSION_ACCESS_DENIED: &str = "cdp_extension_access_denied";
     pub const BORROW_CONFLICT: &str = "borrow_conflict";
+    pub const INCOGNITO_BORROW_DISABLED: &str = "incognito_borrow_disabled";
     pub const SCREENSHOT_CAPTURE_FAILED: &str = "screenshot_capture_failed";
     pub const SCREENSHOT_USER_CANCELLED: &str = "user_cancelled";
     pub const SCREENSHOT_PAGE_HIDDEN: &str = "page_hidden";
@@ -335,6 +336,11 @@ pub fn info_for_error(code: ErrorCode, data: Option<&serde_json::Value>) -> Rend
             hint: Some(
                 "rerun snapshot and choose a visible child ref, or wait/scroll/reload before retrying",
             ),
+            exit_code: base.exit_code,
+        },
+        (ErrorCode::PermissionDenied, reason::INCOGNITO_BORROW_DISABLED) => RenderInfo {
+            summary: "tab borrowing is unavailable for incognito sessions and tabs",
+            hint: Some("create a new task tab with `bsk tab create <url> --session <id>`"),
             exit_code: base.exit_code,
         },
         (ErrorCode::PermissionDenied, reason::BORROW_CONFLICT) => RenderInfo {

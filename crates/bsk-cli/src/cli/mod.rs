@@ -26,6 +26,7 @@ pub mod logs;
 pub mod navigate;
 pub mod network;
 pub mod observe;
+pub(crate) mod protocol;
 pub mod record;
 pub mod record_recovery;
 pub mod record_state;

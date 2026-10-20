@@ -221,6 +221,43 @@ describe("ToolDispatcher", () => {
     expect(create).toHaveBeenCalledWith("about:blank", { focused: false });
   });
 
+  it("starts an incognito session through the normal dispatcher", async () => {
+    const { transport, sent, deliver } = fakeTransport();
+    const create = vi.fn(async () => ({ windowId: 4242, initialTabIds: [1], incognito: true }));
+    const sessions = new SessionManager({
+      agentWindow: { create, remove: vi.fn(), ensureActiveTab: vi.fn(async () => 1) },
+    });
+    const dispatcher = new ToolDispatcher({ transport, sessions });
+    dispatcher.start();
+    deliver(makeRequest("tool.session_start", { session_id: "private", incognito: true }));
+    await flushMicrotasks();
+    expect(create).toHaveBeenCalledWith("about:blank", { incognito: true });
+    expect(sessions.get("private")?.incognito).toBe(true);
+    expect(sent[0]).toMatchObject({ result: { agent_window_id: 4242 } });
+    dispatcher.stop();
+  });
+
+  it.each([
+    "true",
+    1,
+    null,
+  ])("rejects invalid incognito input %s before creating a window", async (incognito) => {
+    const { transport, sent, deliver } = fakeTransport();
+    const create = vi.fn();
+    const sessions = new SessionManager({
+      agentWindow: { create, remove: vi.fn(), ensureActiveTab: vi.fn() },
+    });
+    const dispatcher = new ToolDispatcher({ transport, sessions });
+    dispatcher.start();
+    deliver(makeRequest("tool.session_start", { session_id: "private", incognito }));
+    await flushMicrotasks();
+    expect(sent[0]).toMatchObject({
+      error: { code: "invalid_params", message: "incognito must be a boolean" },
+    });
+    expect(create).not.toHaveBeenCalled();
+    dispatcher.stop();
+  });
+
   it("routes tool.session_stop and replies with empty result", async () => {
     const { transport, sent, deliver } = fakeTransport();
     const sessions = new SessionManager({
