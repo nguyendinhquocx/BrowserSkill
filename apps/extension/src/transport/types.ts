@@ -16,12 +16,14 @@ export type ErrorCode =
   | "cdp_failed"
   | "protocol_error"
   | "cancelled"
+  | "user_aborted"
   | "version_too_old"
   | "multiple_browsers_online"
   | "no_browser_connected";
 
 /** Stable `RpcError.data.reason` values for CLI hint selection. */
 export type RpcErrorReason =
+  | "cooperation_sync_required"
   | "extract_params_invalid"
   | "extract_target_stale"
   | "extract_target_ambiguous"

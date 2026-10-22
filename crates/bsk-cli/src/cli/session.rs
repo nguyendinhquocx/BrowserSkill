@@ -40,7 +40,7 @@ pub struct SessionCmd {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum SessionSub {
-    /// Start a new session against the (single) connected browser.
+    /// Start a browser session with automatic human collaboration.
     Start(SessionStartArgs),
     /// Stop a single session, or all sessions with `--all`.
     Stop(SessionStopArgs),

@@ -89,6 +89,17 @@ function defineBrowserTool(
           "Operation to perform. Other arguments are action-dependent and are validated by that operation.",
       },
       ...spec.parameters,
+      dependsOn: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Observed refs/selectors covering all regions used for this decision. Omit to validate the whole page. The action target's region and form values are always checked.",
+      },
+      contextId: {
+        type: "string",
+        description:
+          "Shared-tab actions require the context_id you actually received from bsk_session sync. One context authorizes one action; never substitute a newer context into an old plan.",
+      },
     },
     output: {
       schema: DOMAIN_RESULT,
@@ -103,7 +114,11 @@ function defineBrowserTool(
     },
     async execute(args, exec) {
       const definition = definitionFor(definitions, spec.actions, args.action);
-      return (await definition.execute(operationArgs(args), exec)) as never;
+      return (await definition.execute(operationArgs(args), {
+        ...exec,
+        observationContext: args.contextId,
+        observationDependencies: args.dependsOn,
+      } as typeof exec)) as never;
     },
     presentCall(args) {
       const definition = definitionFor(definitions, spec.actions, args.action);
@@ -120,7 +135,10 @@ const BROWSER_TOOL_SPECS: BrowserToolSpec[] = [
   {
     name: toolNames.session,
     description:
-      "Manage plugin-owned browser sessions. Actions: start opens an Agent Window; stop closes an " +
+      "Manage plugin-owned browser sessions. Human collaboration is automatic; share is an optional compatibility alias for sync/rebinding. " +
+      "sync returns current state and context_id; wait-user waits for hand-back; cooperation-status reads ownership. " +
+      "For shared tabs, pass the observed contextId to one action, sync again, and replan toward the assigned goal. " +
+      "Actions: start opens an Agent Window; stop closes an " +
       "owned session; list returns owned sessions. For start, url/device/width/height/noFocus are " +
       "optional. When a specific profile is required, always set browser to its verified instance " +
       "ID or unique label, even with one connected browser; stop if the target is unknown or " +
@@ -132,9 +150,15 @@ const BROWSER_TOOL_SPECS: BrowserToolSpec[] = [
       start: "session.start",
       stop: "session.stop",
       list: "session.list",
+      share: "session.cooperate.enable",
+      sync: "session.cooperate.sync",
+      "wait-user": "session.cooperate.wait",
+      "cooperation-status": "session.cooperate.status",
     },
     parameters: {
       ...SESSION_STOP_PARAMS,
+      tabId: TAB_ID_PARAM,
+      timeoutMs: TIMEOUT_MS_PARAM,
       url: { type: "string", description: "Initial URL for start." },
       width: { type: "integer", description: "Agent Window width; start requires height too." },
       height: { type: "integer", description: "Agent Window height; start requires width too." },
@@ -222,7 +246,7 @@ const BROWSER_TOOL_SPECS: BrowserToolSpec[] = [
     name: toolNames.interact,
     description:
       "Interact with the active Agent Window tab. Actions: click, hover, wheel, scroll-to, focus, blur, fill, select, " +
-      "press. click/hover/scroll-to/focus/blur/fill/select require target; fill also requires value; select requires " +
+      "press, evaluate, upload, download. evaluate requires expression; upload requires target/files; download requires target/output. click/hover/scroll-to/focus/blur/fill/select require target; fill also requires value; select requires " +
       "values; press requires key and may optionally focus target first. wheel requires a nonzero deltaX or deltaY and optionally accepts target; observe afterwards to check the response.",
     actions: {
       click: "interact.click",
@@ -234,6 +258,9 @@ const BROWSER_TOOL_SPECS: BrowserToolSpec[] = [
       fill: "interact.fill",
       select: "interact.select",
       press: "interact.press",
+      evaluate: "interact.evaluate",
+      upload: "interact.upload",
+      download: "interact.download",
     },
     parameters: {
       session: SESSION_PARAM,
@@ -269,6 +296,17 @@ const BROWSER_TOOL_SPECS: BrowserToolSpec[] = [
         items: { type: "string" },
         description: "Option values for select; at least one is required.",
       },
+      expression: { type: "string", description: "JavaScript expression for evaluate." },
+      awaitPromise: { type: "boolean", description: "Evaluate: await promises, default true." },
+      returnByValue: { type: "boolean", description: "Evaluate: return JSON, default true." },
+      files: {
+        type: "array",
+        items: { type: "string" },
+        description: "Upload: one to twenty local file paths.",
+      },
+      mode: { type: "string", enum: ["input", "drop"], description: "Upload mechanism." },
+      output: { type: "string", description: "Download destination file." },
+      overwrite: { type: "boolean", description: "Allow replacing the download destination." },
       key: { type: "string", description: "Key or combo for press." },
       holdMs: { type: "integer", description: "Key hold duration for press." },
     },

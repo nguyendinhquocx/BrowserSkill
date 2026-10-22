@@ -268,6 +268,13 @@ pub fn info_for_error(code: ErrorCode, data: Option<&serde_json::Value>) -> Rend
             ),
             ..base
         },
+        (_, "cooperation_sync_required") => RenderInfo {
+            summary: "shared page control or observation changed",
+            hint: Some(
+                "use `bsk cooperate wait --session SID`, then `bsk cooperate sync --session SID`; replan toward the assigned goal and check existing effects before another action",
+            ),
+            ..base
+        },
         (_, "input_cleanup_failed") => RenderInfo {
             summary: "input completed but temporary browser state could not be restored",
             hint: Some(
