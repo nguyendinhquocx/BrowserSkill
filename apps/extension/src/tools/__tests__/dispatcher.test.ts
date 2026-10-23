@@ -259,24 +259,46 @@ describe("ToolDispatcher", () => {
     dispatcher.stop();
   });
 
-  it("routes tool.session_stop and replies with empty result", async () => {
+  it.each([
+    false,
+    true,
+  ])("stops the session and releases cooperation with Chrome available: %s", async (chromeAvailable) => {
+    vi.stubGlobal(
+      "chrome",
+      chromeAvailable
+        ? { tabs: { remove: vi.fn(async () => {}), query: vi.fn(async () => []) } }
+        : undefined,
+    );
     const { transport, sent, deliver } = fakeTransport();
     const sessions = new SessionManager({
       agentWindow: {
-        create: vi.fn(async () => ({ windowId: 4242, initialTabIds: [] })),
+        create: vi.fn(async () => ({ windowId: 4242, initialTabIds: [7] })),
         remove: vi.fn(async () => {}),
-        ensureActiveTab: vi.fn(async () => 1),
+        ensureActiveTab: vi.fn(async () => 7),
       },
     });
     await sessions.start("aa11");
-    const dispatcher = new ToolDispatcher({ transport, sessions });
+    const cooperation = new CooperationController({
+      sessions,
+      readFrames: async () => new Map(),
+      resumeFrames: async () => {},
+      changed: vi.fn(),
+    });
+    cooperation.startSession("aa11");
+    expect(cooperation.hasSession("aa11")).toBe(true);
+    const release = vi.spyOn(cooperation, "release");
+    const dispatcher = new ToolDispatcher({ transport, sessions, cooperation });
     dispatcher.start();
 
     deliver(makeRequest("tool.session_stop", { session_id: "aa11" }));
     await flushMicrotasks();
     expect(sessions.has("aa11")).toBe(false);
+    expect(release).toHaveBeenCalledExactlyOnceWith("aa11");
+    expect(cooperation.hasSession("aa11")).toBe(false);
+    expect(cooperation.enabled(7)).toBe(false);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toEqual({ id: "r-1", result: {} });
+    dispatcher.stop();
   });
 
   it.each([

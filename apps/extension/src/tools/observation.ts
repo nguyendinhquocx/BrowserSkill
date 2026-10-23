@@ -12,7 +12,7 @@ import {
 
 export { parsePngDimensions } from "./png";
 
-import type { CapturedSceneInput } from "./vom/facts";
+import type { CapturedSceneInput, ObservationFacts } from "./vom/facts";
 // Observation handlers — `tool.snapshot`, `tool.get_html`, `tool.screenshot`,
 // and semantic `tool.observe` (design §7). Each handler resolves the target
 // tab (defaulting to the Agent Window's active tab when omitted) and
@@ -70,7 +70,7 @@ import {
 import { lookupRefTarget, resolveSnapshotRef } from "./snapshot-ref";
 import { captureControlledViewport } from "./viewport-screenshot";
 import { type CapturedNode, type CapturedSurfaceProbe, probeHoverSurfaces } from "./vom/capture";
-import { captureObservationFacts, semanticCapture } from "./vom/capture-coordinator";
+import { semanticCapture, withObservationFacts } from "./vom/capture-coordinator";
 import type { FrameDocument as CapturedFrameDocument } from "./vom/frame-document";
 import { withOverlayBypass } from "./vom/hover-perception";
 import { probeTooltipNames } from "./vom/name-enrichment";
@@ -950,9 +950,22 @@ export async function captureVomObservation(
   throwIfAborted(options.signal, "observation");
   await cdp.ensureAttachedToUrl?.(tabId, url);
   throwIfAborted(options.signal, "observation");
-  const facts = await captureObservationFacts<CdpAxNode>(cdp, tabId, options.signal, url, {
-    includeVisualFacts: options.includeVisualFacts,
-  });
+  return withObservationFacts(
+    cdp,
+    tabId,
+    (facts: ObservationFacts<CdpAxNode>) => buildVomObservation(cdp, tabId, facts, options),
+    options.signal,
+    url,
+    { includeVisualFacts: options.includeVisualFacts },
+  );
+}
+
+async function buildVomObservation(
+  cdp: CdpRunner,
+  tabId: number,
+  facts: ObservationFacts<CdpAxNode>,
+  options: CaptureVomObservationOptions,
+): Promise<CaptureVomObservationResult & { visualOutput?: ObservationOutput }> {
   const { captured, documents: normalizedDocuments } = semanticCapture(facts);
   throwIfAborted(options.signal, "observation");
   const semanticGraph = buildSemanticGraph({

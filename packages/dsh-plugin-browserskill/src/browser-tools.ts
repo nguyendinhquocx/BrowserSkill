@@ -139,10 +139,12 @@ const BROWSER_TOOL_SPECS: BrowserToolSpec[] = [
       "sync returns current state and context_id; wait-user waits for hand-back; cooperation-status reads ownership. " +
       "For shared tabs, pass the observed contextId to one action, sync again, and replan toward the assigned goal. " +
       "Actions: start opens an Agent Window; stop closes an " +
-      "owned session; list returns owned sessions. For start, url/device/width/height/noFocus are " +
+      "owned session; list returns owned sessions. For start, url/device/width/height/noFocus/incognito are " +
       "optional. When a specific profile is required, always set browser to its verified instance " +
       "ID or unique label, even with one connected browser; stop if the target is unknown or " +
-      "unavailable instead of omitting or changing browser. For stop, specify session or requestId " +
+      "unavailable instead of omitting or changing browser. Set incognito to open an Agent " +
+      "Window isolated from the profile's ordinary browsing state (requires Allow in incognito; " +
+      "incognito sessions cannot borrow tabs). For stop, specify session or requestId " +
       "(not both), or omit both to retry an " +
       "unacknowledged stop before selecting the current owned session. If several stops await " +
       "acknowledgement, specify a target. Once accepted, cleanup continues if the call is aborted.",
@@ -166,6 +168,12 @@ const BROWSER_TOOL_SPECS: BrowserToolSpec[] = [
         type: "boolean",
         description:
           "Background by default. Set false to explicitly open the Agent Window in front.",
+      },
+      incognito: {
+        type: "boolean",
+        description:
+          "Open an incognito Agent Window (requires Allow in incognito). Incognito sessions " +
+          "cannot borrow tabs and are isolated from the profile's ordinary browsing state.",
       },
       browser: BROWSER_PARAM,
       device: { type: "string", enum: DEVICE_PRESETS, description: "Device preset for start." },

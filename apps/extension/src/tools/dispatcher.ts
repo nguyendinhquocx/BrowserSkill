@@ -498,11 +498,14 @@ export class ToolDispatcher {
         await this.releaseHoverLatch((req.params as SessionStopParams).session_id);
         const result = await handleSessionStop(this.sessions, req.params as SessionStopParams, {
           cdp,
-          // Must be wired in production: the agent-tab cleanup and the
-          // window-release decision (issue #57) read these deps directly
-          // and silently no-op when they are absent.
-          tabManagement: { tabs: chromeTabMutationApi },
-          tabsQuery: chromeTabsApi,
+          // Must be wired whenever the extension runtime is available: the
+          // agent-tab cleanup and window-release decision (issue #57) read
+          // these deps directly and silently no-op when they are absent.
+          // Outside Chrome (unit tests, scripted tooling) there is no
+          // chrome.tabs surface to wire.
+          ...(typeof chrome === "undefined"
+            ? {}
+            : { tabManagement: { tabs: chromeTabMutationApi }, tabsQuery: chromeTabsApi }),
           signal,
         });
         const stoppedSession = (req.params as SessionStopParams).session_id;
