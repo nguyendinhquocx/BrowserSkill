@@ -80,13 +80,13 @@ export interface BskRunner {
 
 // Business RPCs translate Ctrl-C / opt-in stdin EOF into cancel(rpc_id).
 // Allow reconciliation before hard-killing an old or unresponsive CLI.
-const KILL_GRACE_MS = 3000;
+export const KILL_GRACE_MS = 3000;
 // Windows IPC may spend 5s connecting, 2s cancelling, 2s settling,
 // and up to 5s releasing the entire batch of caller-owned transfers.
-const WINDOWS_KILL_GRACE_MS = 15_000;
+export const WINDOWS_KILL_GRACE_MS = 15_000;
 // A killed child that never reports `exit` at all must still release the caller
 // once the forced kill has had its chance.
-const SETTLE_AFTER_KILL_SLACK_MS = 1000;
+export const SETTLE_AFTER_KILL_SLACK_MS = 1000;
 // `close` fires only once every stdio pipe has reached EOF, which needs every
 // process holding a copy of the pipe handles to be gone, not just `bsk`. When
 // `bsk` auto-spawns the daemon, the daemon can end up holding those handles
@@ -456,7 +456,9 @@ export function parseBskJson(
       parsed?.message ?? (result.stderr.trim() || body || `bsk ${commandLabel} failed`);
     // Surface the envelope's actionable hint in the model-facing message; a
     // hint the model cannot see cannot be followed.
-    const withHint = parsed?.hint !== undefined ? `${message} (hint: ${parsed.hint})` : message;
+    let withHint = parsed?.hint !== undefined ? `${message} (hint: ${parsed.hint})` : message;
+    if (parsed?.code === "dialog_pending" && parsed.data !== undefined)
+      withHint += `\nPending dialog and original operation: ${JSON.stringify(parsed.data)}`;
     throw new BskError(`bsk ${commandLabel} failed: ${withHint}`, {
       code: parsed?.code,
       data: parsed?.data,

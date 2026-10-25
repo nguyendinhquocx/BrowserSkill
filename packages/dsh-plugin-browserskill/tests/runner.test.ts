@@ -11,9 +11,17 @@ import {
   isCommandNotFound,
   isNavigationLifecycleTimeoutPayload,
   isSessionBusyResult,
+  KILL_GRACE_MS,
   parseBskJson,
   runWithSessionBusyRetry,
+  SETTLE_AFTER_KILL_SLACK_MS,
+  WINDOWS_KILL_GRACE_MS,
 } from "../src/runner";
+
+// Wait for both the platform-specific forced kill and the settlement fallback.
+const SETTLE_AFTER_KILL_MS =
+  (process.platform === "win32" ? WINDOWS_KILL_GRACE_MS : KILL_GRACE_MS) +
+  SETTLE_AFTER_KILL_SLACK_MS;
 
 /** Minimal fake stdio pipe recording whether the runner closed its end. */
 class FakeStream extends EventEmitter {
@@ -189,7 +197,7 @@ describe("createBskRunner", () => {
     });
     await vi.advanceTimersByTimeAsync(100); // timeout fires -> SIGINT
     expect(result).toBeUndefined();
-    await vi.advanceTimersByTimeAsync(4_000); // SIGKILL at +3s, settle at +4s
+    await vi.advanceTimersByTimeAsync(SETTLE_AFTER_KILL_MS); // SIGKILL at +grace, settle after
     expect(result).toMatchObject({ code: null, timedOut: true });
     expect(child.killedWith).toEqual(["SIGINT", "SIGKILL"]);
     // Settling is not enough: our ends of the pipes have to go too, or a process
@@ -340,7 +348,7 @@ describe("createBskRunner", () => {
     });
     expect(runner.killFor("s1")).toBe(1);
     runner.killAll();
-    await vi.advanceTimersByTimeAsync(4_000); // SIGKILL at +3s, settle at +4s
+    await vi.advanceTimersByTimeAsync(SETTLE_AFTER_KILL_MS); // SIGKILL at +grace, settle after
     expect(results[0]).toMatchObject({ code: null });
     expect(results[1]).toMatchObject({ code: null });
     expect(children.map((c) => c.stdout.destroyed)).toEqual([true, true]);
@@ -523,6 +531,26 @@ describe("parseBskJson", () => {
 
   it("falls back to stderr when the error body is not JSON", () => {
     expect(() => parseBskJson({ ...base, code: 1, stderr: "boom" }, "x")).toThrow(/boom/);
+  });
+
+  it("keeps dialog and operation identities in the model-visible error and never retries the action", async () => {
+    const reply = {
+      ...base,
+      code: 6,
+      stdout: JSON.stringify({
+        code: "dialog_pending",
+        message: "Choose an answer; do not repeat the action",
+        data: {
+          operation_id: "op-original",
+          dialog: { id: "dlg", type: "prompt", message: "Name", default_prompt: "anonymous" },
+        },
+      }),
+    };
+    const run = vi.fn(async () => reply);
+    const result = await runWithSessionBusyRetry(run);
+    expect(run).toHaveBeenCalledOnce();
+    expect(() => parseBskJson(result, "click")).toThrow("op-original");
+    expect(() => parseBskJson(result, "click")).toThrow('"default_prompt":"anonymous"');
   });
 
   it("surfaces fill recovery guidance to the model without retrying", async () => {
