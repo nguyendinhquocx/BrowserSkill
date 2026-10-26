@@ -659,7 +659,7 @@ function defineBrowserOperations(deps: ToolDeps, register: DefinitionRegistrar):
           maxDepth: { type: "integer", description: "Cap on tree depth before truncating." },
           maxTokens: {
             type: "integer",
-            description: "Soft cap on rendered tokens (~4 chars/token).",
+            description: "Soft cap on rendered tokens (estimated; CJK-aware).",
           },
         },
         output: {

@@ -1,4 +1,5 @@
 import { coverage, detectBlockingLayer, spansViewport } from "./layers";
+import { estimateLineTokens, estimateTokens } from "./tokens";
 import type {
   ActiveScopeBlock,
   BlockingLayer,
@@ -121,10 +122,6 @@ const WEAK_ACTION_LABELS = new Set([
 ]);
 
 const ACTIVE_REGION_POSITIONS = new Set(["fixed", "absolute", "sticky"]);
-
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
 
 function cleaned(value: string | undefined): string | undefined {
   const trimmed = value?.replace(/\s+/g, " ").trim();
@@ -980,7 +977,7 @@ function renderNodes(
   const state = createRenderState(nodes, options, initialLines, surfaces, activeScopeBlocks);
   const children = state.children;
   for (const row of renderTreeRows(children, state)) {
-    const cost = estimateTokens(row.text);
+    const cost = estimateLineTokens(row.text);
     if (state.tokens + cost > state.maxTokens) {
       state.truncated = true;
       break;

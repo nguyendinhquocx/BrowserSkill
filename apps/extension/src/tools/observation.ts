@@ -22,6 +22,7 @@ import {
   type ActiveScopeBlock,
   applyVomInteractionRecovery,
   type CondSurface,
+  estimateLineTokens,
   isVomReferenceNode,
   renderVom,
   type VomNode,
@@ -995,7 +996,7 @@ async function buildVomObservation(
     hoverProbes.surfaceProbes,
   );
   options.onScene?.(decoratedScene);
-  // Reserve space using the renderer's character-based token estimate. Like VOM
+  // Reserve space using the renderer's token estimate. Like VOM
   // headers, this integrity notice remains visible even under a tiny token budget.
   const notices: string[] = [];
   if (facts.issues.some((issue) => issue.stage === "geometry"))
@@ -1060,7 +1061,7 @@ async function buildVomObservation(
     maxTokens:
       !captureNotice || options.maxTokens === undefined
         ? options.maxTokens
-        : Math.max(0, options.maxTokens - Math.ceil((captureNotice.length + 1) / 4)),
+        : Math.max(0, options.maxTokens - estimateLineTokens(captureNotice)),
     redactValues: options.redactValues,
     activeRegionPolicy: options.activeRegionPolicy,
   });
