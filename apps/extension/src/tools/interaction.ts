@@ -1195,7 +1195,7 @@ export async function handleFill(
             } else {
               this.textContent = '';
             }
-            this.dispatchEvent(new Event('input', { bubbles: true }));
+            this.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
           }
           return preparation;
         }`,
@@ -1338,7 +1338,7 @@ export async function handleFill(
       {
         objectId,
         functionDeclaration: `function() {
-          this.dispatchEvent(new Event('input', { bubbles: true }));
+          this.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
           this.dispatchEvent(new Event('change', { bubbles: true }));
         }`,
         returnByValue: true,
@@ -1433,6 +1433,14 @@ export function parseKeySpec(spec: string): { key: string; modifiers: KeyModifie
     .split("+")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
+  // The final '+' is a base key only when every preceding token is a modifier.
+  if (
+    /\+\s*\+\s*$/.test(spec) &&
+    parts.length > 0 &&
+    parts.every((part) => normaliseModifier(part))
+  ) {
+    parts.push("+");
+  }
   if (parts.length <= 1) {
     return { key: spec.trim(), modifiers: [] };
   }
@@ -1789,7 +1797,7 @@ export async function handleSelect(
         for (const opt of select.options) {
           opt.selected = want.has(opt.value);
         }
-        select.dispatchEvent(new Event('input', { bubbles: true }));
+        select.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         select.dispatchEvent(new Event('change', { bubbles: true }));
         const selected = Array.from(select.selectedOptions);
         return {

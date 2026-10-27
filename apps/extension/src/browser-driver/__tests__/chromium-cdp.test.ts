@@ -984,6 +984,29 @@ describe("ChromiumCdp", () => {
     ]);
   });
 
+  it.each([
+    [{ type: "string", value: "connection token expired" }, "connection token expired"],
+    [{ type: "string", value: "first line\nsecond line" }, "first line"],
+    [{ type: "number", value: 0, description: "0" }, "0"],
+    [{ type: "boolean", value: false }, "false"],
+    [{ type: "object", subtype: "null", value: null }, "null"],
+    [{ type: "undefined" }, "[undefined]"],
+  ])("records the thrown primitive %j in console entries", async (exception, text) => {
+    const { api, onEvent } = fakeApi();
+    const cdp = new ChromiumCdp(api);
+    try {
+      await cdp.ensureAttached(22);
+      onEvent.fire({ tabId: 22 }, "Runtime.exceptionThrown", {
+        exceptionDetails: { text: "Uncaught", exception },
+      });
+      expect(cdp.consoleEntriesSince(22, 0, 50, 1000, false).entries).toMatchObject([
+        { kind: "exception", level: "error", text },
+      ]);
+    } finally {
+      cdp.dispose();
+    }
+  });
+
   it("filters console entries by cursor and caps result size", async () => {
     const { api, onEvent } = fakeApi();
     const cdp = new ChromiumCdp(api);
@@ -1058,7 +1081,7 @@ describe("ChromiumCdp", () => {
     });
     onEvent.fire({ tabId: 31 }, "Network.responseReceived", {
       requestId: "shared-id",
-      response: { status: 204 },
+      response: { status: 200 },
       type: "Fetch",
     });
     onEvent.fire({ tabId: 32 }, "Network.loadingFailed", {
@@ -1076,11 +1099,13 @@ describe("ChromiumCdp", () => {
         kind: "response",
         method: "GET",
         url: "https://one.test/api",
-        status: 204,
+        status: 200,
       },
       {
         kind: "failure",
-        url: undefined,
+        method: "GET",
+        url: "https://one.test/api",
+        resource_type: "Fetch",
         error_text: "net::ERR_ABORTED",
       },
     ]);
@@ -1092,6 +1117,26 @@ describe("ChromiumCdp", () => {
         error_text: "net::ERR_FAILED",
       },
     ]);
+  });
+
+  it("clears request metadata when loading finishes", async () => {
+    const { api, onEvent } = fakeApi();
+    const cdp = new ChromiumCdp(api);
+    await cdp.ensureAttached(31);
+    onEvent.fire({ tabId: 31 }, "Network.requestWillBeSent", {
+      requestId: "finished",
+      request: { url: "https://one.test/api", method: "GET" },
+    });
+    onEvent.fire({ tabId: 31 }, "Network.responseReceived", {
+      requestId: "finished",
+      response: { status: 200 },
+    });
+    onEvent.fire({ tabId: 31 }, "Network.loadingFinished", { requestId: "finished" });
+    onEvent.fire({ tabId: 31 }, "Network.loadingFailed", {
+      requestId: "finished",
+      errorText: "net::ERR_FAILED",
+    });
+    expect(cdp.networkEntriesSince(31, 0, 50, 1000).entries[1].url).toBeUndefined();
   });
 
   it("bounds request metadata and clears it on detach", async () => {

@@ -486,6 +486,7 @@ export function resolveSemanticGraph(
     if (isSensitive) delete attrs.value;
     const frame = graph.frames.get(node.frameId);
     const tag = node.dom?.tag.toLowerCase() ?? "";
+    const inForm = node.dom?.inForm;
     const vom: ResolvedSemanticNode["vom"] = {
       tag,
       rect: node.dom?.rect ?? null,
@@ -497,7 +498,11 @@ export function resolveSemanticGraph(
       ...(role ? { role } : {}),
       ...(name ? { name } : {}),
       ...(value !== undefined ? { value } : {}),
+      ...(inForm !== undefined ? { inForm } : {}),
       ...(checked !== undefined ? { checked } : {}),
+      ...(node.ax?.ignored !== true && axProperty(node.ax, "focused") === "true"
+        ? { focused: true }
+        : {}),
       ...(clean(node.dom?.formPlaceholder ?? attrs.placeholder)
         ? { placeholder: clean(node.dom?.formPlaceholder ?? attrs.placeholder) }
         : {}),

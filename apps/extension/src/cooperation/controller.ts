@@ -11,8 +11,11 @@ import type { RequestFrame, RpcError } from "@/transport/types";
 import { guardedRunner } from "./action-guard";
 import { type ControlAuthority, ControlAuthorityError } from "./control-authority";
 import {
+  contentChanges,
   type ObservationEvidence,
   observationEvidence,
+  observedKeyboardTargets,
+  observesTarget,
   sameObservationEvidence,
 } from "./observation-evidence";
 import { pointerTargetValidator } from "./pointer-target";
@@ -60,6 +63,17 @@ interface TabState {
   controlRevision: number;
   /** Revokes permission guards on human intervention, independently of page revisions. */
   authorityRevision: number;
+  /**
+   * Nodes whose text changed by itself between a sync and an action (clocks,
+   * counters, tickers), keyed to the documents they were observed in.
+   */
+  volatile?: Volatile;
+  /** Changes learned from a refused action; active only after a fresh sync. */
+  learned?: Volatile;
+}
+interface Volatile {
+  documents: string;
+  keys: Set<string>;
 }
 export interface CooperationDeps {
   sessions: SessionManager;
@@ -98,6 +112,8 @@ const PASSIVE_DEBUG = new Set<string>(
   ),
 );
 const QUIET_MS = 650;
+/** Upper bound on nodes whose self-changing text the default check tolerates. */
+const MAX_VOLATILE = 256;
 
 function isInitialBlank(tab: { url?: string; pendingUrl?: string }): boolean {
   // Chrome can report the agent-created blank page before its initial load commits.
@@ -116,14 +132,47 @@ function sameFrames(a: Frames, b: Frames, field: "revision" | "structure" | "hum
     })
   );
 }
-function sameFields(a: Frames, b: Frames): boolean {
+function documents(frames: Frames): string {
+  return JSON.stringify([...frames].map(([id, frame]) => [id, frame.document]));
+}
+function quote(text: string): string {
+  const points = Array.from(text);
+  return JSON.stringify(points.length > 40 ? `${points.slice(0, 39).join("")}…` : text);
+}
+function sameFields(a: Frames, b: Frames, ignoreMediaProgress = false): boolean {
+  const stableFields = (frame: FrameState | undefined) =>
+    frame?.fields.map((field) =>
+      ignoreMediaProgress && field.kind === "media_progress"
+        ? { ...field, value: undefined }
+        : field,
+    );
   return (
     a.size === b.size &&
     [...a].every(
-      ([id, frame]) => JSON.stringify(frame.fields) === JSON.stringify(b.get(id)?.fields),
+      ([id, frame]) =>
+        JSON.stringify(stableFields(frame)) === JSON.stringify(stableFields(b.get(id))),
     )
   );
 }
+function sameFocus(a: Frames, b: Frames): boolean {
+  return (
+    a.size === b.size &&
+    [...a].every(([id, frame]) => {
+      const other = b.get(id);
+      return frame.focus === other?.focus && frame.focusIsDocument === other?.focusIsDocument;
+    })
+  );
+}
+
+function sameMedia(a: Frames, b: Frames): boolean {
+  return (
+    a.size === b.size &&
+    [...a].every(
+      ([id, frame]) => JSON.stringify(frame.media ?? []) === JSON.stringify(b.get(id)?.media ?? []),
+    )
+  );
+}
+
 function failure(message: string, effect: "none" | "unknown" = "none"): RpcError {
   return {
     code: "permission_denied",
@@ -554,7 +603,9 @@ export class CooperationController implements ControlAuthority {
           baseline &&
           [...before.values()].every((frame) => frame.fieldsComplete !== false) &&
           baseline.refs === session.refStore.revision &&
-          sameFrames(baseline.frames, before, "structure");
+          sameFrames(baseline.frames, before, "structure") &&
+          sameFocus(baseline.frames, before) &&
+          sameMedia(baseline.frames, before);
         // A delta updates the model's field values. Refresh private semantic
         // evidence too, without replacing refs or repeating page text to the model.
         if (delta && !sameFields(baseline.frames, before))
@@ -586,7 +637,8 @@ export class CooperationController implements ControlAuthority {
           signal.aborted ||
           state.epoch !== epoch ||
           !sameFrames(before, after, "human") ||
-          !sameFields(before, after) ||
+          !sameFields(before, after, true) ||
+          !sameMedia(before, after) ||
           (delta && !sameFrames(before, after, "structure")) ||
           this.humanActive(state) ||
           state.held
@@ -602,6 +654,19 @@ export class CooperationController implements ControlAuthority {
         };
         state.context = context;
         state.baseline = context;
+        // The agent has now observed the refused change; tolerate it from here on.
+        if (state.learned) {
+          const pages = documents(before);
+          if (state.learned.documents === pages)
+            state.volatile = {
+              documents: pages,
+              keys: new Set([
+                ...(state.volatile?.documents === pages ? state.volatile.keys : []),
+                ...state.learned.keys,
+              ]),
+            };
+          state.learned = undefined;
+        }
         const activity = state.activity.filter(
           (event) => event.cursor > (baseline?.activityCursor ?? 0),
         );
@@ -651,7 +716,7 @@ export class CooperationController implements ControlAuthority {
             }),
           state: { ...this.view(state.tabId), mode: "ready" },
           guidance:
-            "Continue toward the assigned goal using this current state. Incorporate helpful progress and correct recoverable mistakes. Page activity is not a change of goal. Each context authorizes one action; sync after it. By default the whole page is checked. To tolerate unrelated updates, declare all observed decision regions with --depends-on refs/selectors (plugin: dependsOn); the target region and form values remain protected. Verify completion and prior submissions from application evidence.",
+            "Continue toward the assigned goal using this current state. Incorporate helpful progress and correct recoverable mistakes. Page activity is not a change of goal. Each context authorizes one action; sync after it. By default the whole page is checked. Text that changes by itself (clocks, counters) is reported once; after the next sync it no longer blocks actions on a ref or selector unless it shares a form, list, dialog, panel or other container with the target. Keys without a ref or selector can use explicit dependencies, while their actual focused region stays protected; uncertain focus and other untargeted actions keep the exact whole-page check. To tolerate other unrelated updates, declare all observed decision regions with --depends-on refs/selectors (plugin: dependsOn); the target region and form values remain protected. Verify completion and prior submissions from application evidence.",
         };
       } finally {
         state.working = false;
@@ -963,6 +1028,7 @@ export class CooperationController implements ControlAuthority {
     const epoch = state.epoch;
     let verifiedFrames = context?.frames;
     let evidenceTargets: { backendNodeId: number; frameId?: string }[] | undefined;
+    let actionTarget: { backendNodeId: number; frameId?: string } | undefined;
     state.working = true;
     const intervention = new AbortController();
     state.interruption = intervention;
@@ -977,13 +1043,32 @@ export class CooperationController implements ControlAuthority {
       if (denied) return denied.message;
       if (!settledNavigation && state.unavailable)
         return "Page interaction coverage changed; wait and synchronize";
+      if (
+        req.method === "tool.press" &&
+        !nativeInputStarted &&
+        !params.ref &&
+        !params.selector &&
+        context &&
+        !sameFocus(context.frames, state.frames)
+      )
+        return "The keyboard focus changed; synchronize before pressing a key";
+      if (
+        !settledNavigation &&
+        !nativeInputStarted &&
+        context &&
+        !sameMedia(context.frames, state.frames)
+      )
+        return "The media source changed; synchronize and replan";
       if (!settledNavigation && state.epoch !== epoch)
         return "The observed page or control state changed; synchronize";
     };
     const assert = () => {
       signal.throwIfAborted();
       const reason = interruption();
-      if (reason) throw new Error((revoked = reason));
+      if (reason) {
+        if (context && state.context === context) state.context = undefined;
+        throw new Error((revoked = reason));
+      }
     };
     const verifyEvidence = async () => {
       if (!context || !verifiedFrames) throw new Error((revoked = "Synchronize before acting"));
@@ -1001,17 +1086,110 @@ export class CooperationController implements ControlAuthority {
       });
       await this.refresh(state);
       assert();
-      if (
-        !evidence ||
-        !(evidenceTargets ?? [undefined]).every((dependency) =>
-          sameObservationEvidence(context.evidence!, evidence!, dependency),
-        )
-      )
+      // A refusal always requires a fresh sync; the refused context cannot retry.
+      const consumeRefused = () => {
+        if (state.context !== context) return;
+        state.context = undefined;
+        this.changed(state);
+      };
+      if (!evidence) {
+        consumeRefused();
         throw new Error(
           (revoked = "The action's observed content changed; synchronize and replan"),
         );
-      // Keep the pre-capture revision: later mutations must be checked again.
-      verifiedFrames = before;
+      }
+      // Learned text is tolerated only around a resolved target present in both
+      // observations, whose region can be protected. Untargeted actions never
+      // learn text. Keys with explicit dependencies additionally protect their
+      // actual focus; other untargeted actions keep the exact whole-page check.
+      const anchored =
+        actionTarget !== undefined &&
+        observesTarget(context.evidence, actionTarget) &&
+        observesTarget(evidence, actionTarget);
+      const tolerant = anchored;
+      const pages = documents(state.frames);
+      const volatile =
+        tolerant && state.volatile?.documents === pages ? state.volatile.keys : undefined;
+      // The target's own semantic region and every declared dependency stay
+      // exact; sameObservationEvidence only relaxes broad layout around a target.
+      const keyboardRegionMatches = () => {
+        if (actionTarget) return true;
+        // Only keyboard input has an implicit recipient. An untargeted script
+        // still requires the exact whole page, as before scoped-key support.
+        if (req.method !== "tool.press")
+          return sameObservationEvidence(context.evidence!, evidence!);
+        const recipients = observedKeyboardTargets(context.evidence!);
+        const current = observedKeyboardTargets(evidence!);
+        const specificFrames = [...context.frames.values()].filter(
+          (frame) => frame.focusIsDocument !== true,
+        );
+        if (!specificFrames.length && !recipients.length && !current.length) return true;
+        // A single, stable, observed recipient gets its own exact region. Missing
+        // AX focus, hidden targets and ambiguous frame/shadow focus stay strict.
+        if (
+          specificFrames.length === 1 &&
+          recipients.length === 1 &&
+          current.length === 1 &&
+          recipients[0].backendNodeId === current[0].backendNodeId &&
+          recipients[0].frameId === current[0].frameId
+        )
+          return sameObservationEvidence(context.evidence!, evidence!, recipients[0]);
+        return sameObservationEvidence(context.evidence!, evidence!);
+      };
+      const matches = (keys?: ReadonlySet<string>) => {
+        if (evidenceTargets) {
+          return (
+            keyboardRegionMatches() &&
+            (!actionTarget ||
+              sameObservationEvidence(context.evidence!, evidence!, actionTarget, keys)) &&
+            evidenceTargets.every((dependency) =>
+              sameObservationEvidence(context.evidence!, evidence!, dependency),
+            )
+          );
+        }
+        return (
+          (!anchored ||
+            sameObservationEvidence(context.evidence!, evidence!, actionTarget, keys)) &&
+          sameObservationEvidence(context.evidence!, evidence!, undefined, keys)
+        );
+      };
+      if (matches(volatile)) {
+        // Keep the pre-capture revision: later mutations must be checked again.
+        verifiedFrames = before;
+        return;
+      }
+      consumeRefused();
+      // Learn page activity only from in-place text changes that every protected
+      // region would tolerate, with no human input since the sync.
+      const changes =
+        tolerant && sameFrames(context.frames, state.frames, "human")
+          ? contentChanges(context.evidence, evidence, volatile)
+          : undefined;
+      const candidate =
+        changes && new Set([...(volatile ?? []), ...changes.map((change) => change.key)]);
+      const pending = state.learned?.documents === pages ? state.learned.keys : undefined;
+      if (
+        changes &&
+        matches(candidate) &&
+        (volatile?.size ?? 0) + (pending?.size ?? 0) + changes.length <= MAX_VOLATILE
+      ) {
+        // Learned keys stay inactive until the agent observes them in a new sync.
+        state.learned = {
+          documents: pages,
+          keys: new Set([...(pending ?? []), ...changes.map((change) => change.key)]),
+        };
+        // One clock is several nodes (element, text, line box); report it once.
+        const reported = [
+          ...new Map(
+            changes.map((change) => [`${change.before}\u0000${change.after}`, change]),
+          ).values(),
+        ];
+        const [first] = reported;
+        throw new Error(
+          (revoked = `Page text changed by itself (${quote(first.before)} → ${quote(first.after)}${reported.length > 1 ? ` and ${reported.length - 1} more` : ""}); synchronize and replan. After that sync, further changes to that text no longer block actions on a ref or selector elsewhere. They still block actions whose target shares a form, list, dialog, panel or other container with it, and actions without a ref, selector or explicit dependencies. If the decision relies on that text, declare it with --depends-on to keep it exact`),
+        );
+      }
+      throw new Error((revoked = "The action's observed content changed; synchronize and replan"));
     };
     try {
       await this.refresh(state);
@@ -1032,7 +1210,7 @@ export class CooperationController implements ControlAuthority {
           "shared action",
         );
         if (isRpcError(resolved)) return resolved;
-        if (params.depends_on?.length) evidenceTargets = [resolved];
+        actionTarget = resolved;
       }
       if (params.depends_on !== undefined) {
         if (
@@ -1046,7 +1224,10 @@ export class CooperationController implements ControlAuthority {
             code: "invalid_params",
             message: "depends_on requires at most 16 observed refs/selectors",
           };
-        if (evidenceTargets)
+        if (params.depends_on.length) {
+          // Dependencies constrain the decision even when a key has no target.
+          // Keep them separate from the target so learned text never relaxes them.
+          evidenceTargets = [];
           for (const dependency of params.depends_on) {
             const resolved = await resolveActionTarget(
               guardedRunner(cdp),
@@ -1058,6 +1239,7 @@ export class CooperationController implements ControlAuthority {
             if (isRpcError(resolved)) return resolved;
             evidenceTargets.push(resolved);
           }
+        }
       }
       await verifyEvidence();
       state.context = undefined; // Consume before execution, including failed/unknown replies.

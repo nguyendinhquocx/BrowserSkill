@@ -32,6 +32,9 @@ export interface CapturedNode {
    */
   rendered?: boolean;
   textContent?: string;
+  /** Native form ownership, or raw containment for custom progress widgets;
+   * absent when unavailable. Never infer this from the projected semantic tree. */
+  inForm?: boolean;
   formState?: "empty" | "filled" | "default";
   formValue?: string;
   /** Live native checked state, independent of the submitted form value. */

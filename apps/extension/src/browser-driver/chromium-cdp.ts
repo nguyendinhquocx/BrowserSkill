@@ -1213,14 +1213,17 @@ export class ChromiumCdp {
         case "Network.responseReceived":
           this.appendNetwork(
             tabId,
-            parseNetworkResponse(this.takeNetworkRequest(tabId, params), params),
+            parseNetworkResponse(this.getNetworkRequest(tabId, params), params),
           );
           break;
         case "Network.loadingFailed":
           this.appendNetwork(
             tabId,
-            parseNetworkFailure(this.takeNetworkRequest(tabId, params), params),
+            parseNetworkFailure(this.getNetworkRequest(tabId, params, true), params),
           );
+          break;
+        case "Network.loadingFinished":
+          this.getNetworkRequest(tabId, params, true);
           break;
       }
     };
@@ -1269,14 +1272,18 @@ export class ChromiumCdp {
     this.networkRequestMeta.set(tabId, tabMeta);
   }
 
-  /** Consume request metadata once its response or failure has been observed. */
-  private takeNetworkRequest(tabId: number, params: unknown): NetworkRequestMeta | undefined {
+  /** Keep metadata through response headers; consume it only when loading ends. */
+  private getNetworkRequest(
+    tabId: number,
+    params: unknown,
+    finished = false,
+  ): NetworkRequestMeta | undefined {
     const raw = (params ?? {}) as Record<string, unknown>;
     const id = typeof raw.requestId === "string" ? raw.requestId : undefined;
     if (!id) return undefined;
     const tabMeta = this.networkRequestMeta.get(tabId);
     const info = tabMeta?.get(id);
-    tabMeta?.delete(id);
+    if (finished) tabMeta?.delete(id);
     if (tabMeta?.size === 0) this.networkRequestMeta.delete(tabId);
     return info;
   }
@@ -1431,7 +1438,7 @@ export function parseExceptionThrown(params: unknown): ParsedConsoleEntry | null
   const details = (raw.exceptionDetails ?? {}) as Record<string, unknown>;
   const exception = (details.exception ?? {}) as Record<string, unknown>;
   const text =
-    firstLine(typeof exception.description === "string" ? exception.description : undefined) ||
+    firstLine(remoteObjectToText(exception)) ||
     firstLine(typeof details.text === "string" ? details.text : undefined) ||
     "Uncaught (unknown error)";
   return makeConsoleEntry({

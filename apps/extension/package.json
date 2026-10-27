@@ -9,7 +9,8 @@
     "zip": "wxt zip",
     "compile": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "wxt prepare"
   },
   "dependencies": {
     "@browser-skill/i18n": "workspace:*",

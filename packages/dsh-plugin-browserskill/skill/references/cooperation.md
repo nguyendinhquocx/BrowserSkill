@@ -28,16 +28,37 @@ History is bounded and document transitions can have gaps; events are evidence, 
 
 The default guard checks the whole observed page. When the decision depends on known regions,
 CLI actions can repeat `--depends-on @eN` (the plugin uses `dependsOn: ["@eN"]`). Include every
-region used in the decision: for example both the options list and the current form. The target's
-form/list/dialog, all form values, and modal state remain protected. If the dependency set is
-uncertain, omit it and retain whole-page checking. Dependencies must come from the current
-observation; they do not authorize replaying an old plan. Cosmetic changes still require a
-live target and hit check. Readonly pickers and discrete controls return control automatically;
-text editing, composition, held keys and dragging keep the person's lease until they finish.
+region used in the decision: for example both the options list and the current form. The
+target's form/list/dialog, all form values, and modal state remain protected. If the dependency
+set is uncertain, omit it and retain whole-page checking. Text that changes by itself between
+sync and action (a clock, a counter) is reported once with the before/after text. After you sync
+and replan, further changes to that text no longer block actions on a ref or selector unless it
+shares a form, list, dialog, panel or other container with the target. Actions without a ref or
+selector never learn incidental text; a bare key press checks the whole page exactly unless
+explicit dependencies narrow its decision regions. Added, removed or
+re-rendered elements and text without its own accessible node (such as `aria-hidden` content)
+keep blocking. If the decision relies on such text, declare it with `--depends-on`, which stays
+exact. Dependencies must come from the current observation; they do not authorize replaying an
+old plan. Cosmetic changes still require a live target and hit check. Readonly pickers and
+discrete controls return control automatically; text editing, composition, held keys and
+dragging keep the person's lease until they finish.
 
 A regular coordination result is not a failed browser attempt. Use wait then sync, and choose
 the next action from the actual result. Use request-help only for an actual human requirement
 such as login or a captcha. Explicit user stop always ends the task.
+
+On continuously updating pages, declare the observed decision regions instead of repeatedly
+retrying a whole-page action. `press` honors dependencies even without a focus target; specify
+a target when the key must be delivered there. Untargeted keys reject a changed focus and
+protect the actual focused region even if the declared dependencies are elsewhere. Unknown
+or ambiguous focus keeps whole-page checking; untargeted scripts also keep that strict check.
+A clearly labelled media timeline with an unambiguous video/audio association may advance
+beside a pause button, including in the same player region. Directly observing the timeline,
+its media element or a containing element keeps its value exact. Submitted inputs, form members,
+ordinary sliders and other business values remain protected. Media identity, child `<source>`
+declarations and the selected source stay exact. Form ownership remains protected even when
+a form is omitted from the observation. Unknown media controls or unavailable form-ownership
+evidence retain ordinary checks.
 
 ## Scripts and file transfers
 

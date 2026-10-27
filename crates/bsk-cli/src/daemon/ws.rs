@@ -353,13 +353,11 @@ pub(super) async fn drive_connection<S: tokio::io::AsyncRead + tokio::io::AsyncW
     // them before replacing the browser registration; otherwise an old WS
     // cleanup racing with this handshake can preserve rows that no longer
     // have an Agent Window on the extension side.
-    for session in state.sessions.purge_browser(&browser_id) {
-        state.tool_queues.remove(&session.id);
-        state.session_interrupts.drop_session(&session.id);
-        state.transfers.release_session(&session.id.0);
-        state.dialog_operations.remove_session(&session.id.0);
-        debug!(session = %session.id, "purged stale session before browser reconnect");
-    }
+    state.purge_sessions_of_browser(
+        &browser_id,
+        crate::rpc_reason::BROWSER_DISCONNECTED,
+        "purged stale session before browser reconnect",
+    );
     let (tx, mut rx) = mpsc::unbounded_channel::<Frame>();
     let generation = super::browsers::next_browser_generation();
     let connected_at_ms = std::time::SystemTime::now()
@@ -491,13 +489,11 @@ pub(super) async fn drive_connection<S: tokio::io::AsyncRead + tokio::io::AsyncW
         .is_some()
     {
         info!(id = %browser_id, generation, "browser disconnected");
-        for s in state.sessions.purge_browser(&browser_id) {
-            state.tool_queues.remove(&s.id);
-            state.session_interrupts.drop_session(&s.id);
-            state.transfers.release_session(&s.id.0);
-            state.dialog_operations.remove_session(&s.id.0);
-            debug!(session = %s.id, "purged session on browser disconnect");
-        }
+        state.purge_sessions_of_browser(
+            &browser_id,
+            crate::rpc_reason::BROWSER_DISCONNECTED,
+            "purged session on browser disconnect",
+        );
     } else {
         info!(
             id = %browser_id,
@@ -706,6 +702,7 @@ fn handle_session_window_closed(
         &state.tool_queues,
         &state.session_interrupts,
         &session_id,
+        Some(crate::rpc_reason::SESSION_WINDOW_CLOSED),
     ) {
         state.transfers.release_session(&session_id.0);
         state.dialog_operations.remove_session(&session_id.0);

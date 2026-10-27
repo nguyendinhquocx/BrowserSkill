@@ -231,8 +231,7 @@ export async function decodeDocument(
       backendNodeId,
       nodeType: dn.nodeType?.[n],
       parentBackendNodeId,
-      ...(profile.includeVisualFacts &&
-      (dn.parentIndex?.[n] === undefined || (parentIdx >= 0 && parentBackendNodeId === null))
+      ...(dn.parentIndex?.[n] === undefined || (parentIdx >= 0 && parentBackendNodeId === null)
         ? { parentMissing: true }
         : {}),
 
