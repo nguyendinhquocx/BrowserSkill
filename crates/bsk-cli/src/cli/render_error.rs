@@ -79,6 +79,7 @@ pub mod reason {
     pub const SESSION_BUSY: &str = crate::rpc_reason::SESSION_BUSY;
     pub const SESSION_IDLE_TIMEOUT: &str = crate::rpc_reason::SESSION_IDLE_TIMEOUT;
     pub const SESSION_WINDOW_CLOSED: &str = crate::rpc_reason::SESSION_WINDOW_CLOSED;
+    pub const SESSION_USER_MOVED_TAB: &str = crate::rpc_reason::SESSION_USER_MOVED_TAB;
     pub const BROWSER_DISCONNECTED: &str = crate::rpc_reason::BROWSER_DISCONNECTED;
     pub const OBSERVE_IDENTITY_RELOAD_LOOP: &str = crate::rpc_reason::OBSERVE_IDENTITY_RELOAD_LOOP;
     pub const BORROW_AGENT_WINDOW_TAB: &str = crate::rpc_reason::BORROW_AGENT_WINDOW_TAB;
@@ -299,6 +300,13 @@ pub fn info_for_error(code: ErrorCode, data: Option<&serde_json::Value>) -> Rend
             summary: "the session stopped after its idle timeout",
             hint: Some(
                 "start a new session with `bsk session start`; run the daemon with a larger `--session-idle` (default 5m) for longer tasks; the Agent Window and any tab it opened were closed with the session",
+            ),
+            exit_code: base.exit_code,
+        },
+        (_, reason::SESSION_USER_MOVED_TAB) => RenderInfo {
+            summary: "the session ended because the user moved a controlled tab out of its Agent Window",
+            hint: Some(
+                "all pages were preserved and browser control ended; this session cannot resume. Ask the user before starting a new session or borrowing a page again",
             ),
             exit_code: base.exit_code,
         },
@@ -1093,6 +1101,29 @@ mod tests {
     /// a generic not-found, and the anti-debugging / borrow-target
     /// reasons get non-retry copy instead of the `cdp_failed` /
     /// `invalid_params` defaults.
+    #[test]
+    fn user_moved_tab_is_terminal_for_running_and_later_commands() {
+        for code in [
+            ErrorCode::UserAborted,
+            ErrorCode::NotFound,
+            ErrorCode::Timeout,
+            ErrorCode::Cancelled,
+            ErrorCode::CdpFailed,
+            ErrorCode::ProtocolError,
+        ] {
+            let rendered = info_for_error(
+                code,
+                Some(&serde_json::json!({"reason": crate::rpc_reason::SESSION_USER_MOVED_TAB})),
+            );
+            assert!(rendered.summary.contains("user moved a controlled tab"));
+            let hint = rendered.hint.unwrap();
+            assert!(hint.contains("all pages were preserved"));
+            assert!(hint.contains("cannot resume"));
+            assert!(hint.contains("Ask the user"));
+            assert_eq!(rendered.exit_code, info_for(code).exit_code);
+        }
+    }
+
     #[test]
     fn ended_sessions_and_recurring_failures_get_reasoned_copy() {
         let idle = info_for_error(

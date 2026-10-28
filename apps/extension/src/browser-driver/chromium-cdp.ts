@@ -421,18 +421,50 @@ export class ChromiumCdp {
     }
   }
 
-  async getFrameGraph(tabId: number): Promise<CdpFrameGraph> {
+  async getFrameGraph(tabId: number, signal?: AbortSignal): Promise<CdpFrameGraph> {
+    signal?.throwIfAborted();
     await this.ensureAttached(tabId);
+    const attachmentId = this.getAttachmentId(tabId);
+    const check = () => {
+      signal?.throwIfAborted();
+      if (attachmentId === undefined || this.getAttachmentId(tabId) !== attachmentId) {
+        const error = new Error("Debugger attachment changed during frame discovery");
+        error.name = "CdpAttachmentChangedError";
+        throw error;
+      }
+    };
+    // Frame discovery belongs to this attachment. An old tree reply must not
+    // reconnect a released tab, or continue against another reader's connection.
+    const read = async <T>(
+      target: CdpTarget,
+      method: string,
+      params: object,
+      timeoutMs?: number,
+    ): Promise<T> => {
+      check();
+      try {
+        const result = await this.command(target, method, params, timeoutMs, check);
+        check();
+        return result as T;
+      } catch (error) {
+        check();
+        throw error;
+      }
+    };
+    check();
     // Ordinary configuration failures leave the graph to the root tree. A
     // timed-out read means the renderer is not answering: stop here instead of
     // queueing the tree, owner and snapshot reads behind the stuck command.
     await this.enableFrameDiscovery({ tabId }).catch(rethrowReadTimeout);
+    check();
     this.retryChildFrameDiscovery(tabId);
     await this.drainFrameAttachTasks(tabId);
+    check();
 
     const sources: CdpFrameTreeSource[] = [];
     const unavailable = new Map<string, CdpTarget>();
     const isolateChildTimeout = (error: unknown, target: CdpTarget) => {
+      check();
       if (!(error instanceof CdpReadTimeoutError)) return;
       const frameId =
         target.sessionId && this.frameDiscovery.get(tabId)?.frameIds.get(target.sessionId);
@@ -442,7 +474,7 @@ export class ChromiumCdp {
         throw error;
       unavailable.set(frameId, target);
     };
-    const root = await this.sendToTarget<{ frameTree?: CdpFrameTreeNode }>(
+    const root = await read<{ frameTree?: CdpFrameTreeNode }>(
       { tabId },
       "Page.getFrameTree",
       {},
@@ -455,7 +487,7 @@ export class ChromiumCdp {
       sessions.map(async (sessionId): Promise<CdpFrameTreeSource | null> => {
         const target = { tabId, sessionId };
         try {
-          const reply = await this.sendToTarget<{ frameTree?: CdpFrameTreeNode }>(
+          const reply = await read<{ frameTree?: CdpFrameTreeNode }>(
             target,
             "Page.getFrameTree",
             {},
@@ -484,11 +516,9 @@ export class ChromiumCdp {
         const parent = frameById.get(frame.parentFrameId);
         if (!parent) return;
         try {
-          const owner = await this.sendToTarget<{ backendNodeId?: number }>(
-            parent.target,
-            "DOM.getFrameOwner",
-            { frameId: frame.frameId },
-          );
+          const owner = await read<{ backendNodeId?: number }>(parent.target, "DOM.getFrameOwner", {
+            frameId: frame.frameId,
+          });
           if (owner.backendNodeId !== undefined) frame.ownerBackendNodeId = owner.backendNodeId;
         } catch (err) {
           // The frame may have navigated between tree capture and owner lookup.
@@ -496,6 +526,7 @@ export class ChromiumCdp {
         }
       }),
     );
+    check();
     return omitFrameSubtrees(discovered, unavailable);
   }
 

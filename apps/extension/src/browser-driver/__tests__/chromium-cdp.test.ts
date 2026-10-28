@@ -37,6 +37,62 @@ afterEach(() => {
 });
 
 describe("ChromiumCdp", () => {
+  it.each([
+    "abort",
+    "replacement",
+  ] as const)("does not downgrade %s during an OOPIF tree read to a missing child", async (ending) => {
+    const { api, onEvent } = fakeApi();
+    let finishChild!: (value: object) => void;
+    let childStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      childStarted = resolve;
+    });
+    const childReply = new Promise<object>((resolve) => {
+      finishChild = resolve;
+    });
+    vi.mocked(api.sendCommand).mockImplementation(async (target, method) => {
+      if (method === "Page.getFrameTree") {
+        if (target.sessionId === "child-session") {
+          childStarted();
+          return childReply;
+        }
+        return {
+          frameTree: {
+            frame: { id: "main" },
+            childFrames: [{ frame: { id: "child", parentId: "main" } }],
+          },
+        };
+      }
+      return {};
+    });
+    const cdp = new ChromiumCdp(api);
+    const signal = new AbortController();
+    try {
+      await cdp.ensureAttached(4);
+      onEvent.fire({ tabId: 4 }, "Target.attachedToTarget", {
+        sessionId: "child-session",
+        targetInfo: { type: "iframe", targetId: "child" },
+      });
+      const graph = cdp.getFrameGraph(4, signal.signal);
+      await started;
+      if (ending === "abort") signal.abort();
+      else {
+        await cdp.detach(4);
+        await cdp.ensureAttached(4);
+      }
+      const callsBeforeReply = vi.mocked(api.sendCommand).mock.calls.length;
+      finishChild({ frameTree: { frame: { id: "child" } } });
+      await expect(graph).rejects.toMatchObject({
+        name: ending === "abort" ? "AbortError" : "CdpAttachmentChangedError",
+      });
+      expect(api.sendCommand).toHaveBeenCalledTimes(callsBeforeReply);
+      expect(api.attach).toHaveBeenCalledTimes(ending === "abort" ? 1 : 2);
+    } finally {
+      await cdp.detachAll();
+      cdp.dispose();
+    }
+  });
+
   it("isolates a known child tree timeout and keeps it gated until recovery", async () => {
     vi.useFakeTimers();
     vi.spyOn(console, "warn").mockImplementation(() => {});

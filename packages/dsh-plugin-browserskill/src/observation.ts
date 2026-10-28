@@ -36,11 +36,6 @@ export interface SessionObservation {
   /** Summary of the most recent failed action (drives the red status dot). */
   lastError?: string;
   /**
-   * The daemon reports this session as gone (e.g. daemon restart): the strip
-   * greys it out until it is stopped/removed. No more frames are requested.
-   */
-  dead?: boolean;
-  /**
    * The DSH conversations this session belongs to (the starting agent's
    * session plus its seed-lineage ancestors), recorded at start. Scoped
    * surfaces (the native sidebar tab) filter by it; absent means untracked
@@ -262,7 +257,7 @@ export class ObservationService {
   beginAction(sessionId: string, action: string): void {
     if (!this.deps.options.enabled || this.disposed) return;
     const entry = this.observations.get(sessionId);
-    if (entry === undefined || entry.dead === true) return;
+    if (entry === undefined) return;
     const now = this.scheduler.now();
     this.lastActivity.set(sessionId, now);
     // A fresh action clears the previous error marker (red dot means "last action failed").
@@ -278,7 +273,7 @@ export class ObservationService {
   endAction(sessionId: string, error?: string): void {
     if (!this.deps.options.enabled || this.disposed) return;
     const entry = this.observations.get(sessionId);
-    if (entry === undefined || entry.dead === true) return;
+    if (entry === undefined) return;
     const now = this.scheduler.now();
     this.lastActivity.set(sessionId, now);
     const next: SessionObservation = {
@@ -367,8 +362,7 @@ export class ObservationService {
       !this.disposed &&
       this.thumbnailViewers > 0 &&
       !this.foregroundDepth.has(sessionId) &&
-      entry !== undefined &&
-      entry.dead !== true
+      entry !== undefined
     );
   }
 

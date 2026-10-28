@@ -141,6 +141,25 @@ pub enum DispatchError {
 }
 
 impl DispatchError {
+    fn with_session_end_reason(self, entry: Option<&ToolInflightEntry>) -> Self {
+        if entry.and_then(ToolInflightEntry::cancel_reason)
+            != Some(super::inflight::CancelReason::UserMovedTab)
+        {
+            return self;
+        }
+        // Apply the terminal cause when returning to the caller, including when
+        // the outer wait expires before the worker finishes cancellation cleanup.
+        let mut error = self.into_rpc();
+        let data = error.data.get_or_insert_with(|| serde_json::json!({}));
+        if data.is_null() {
+            *data = serde_json::json!({});
+        } else if !data.is_object() {
+            *data = serde_json::json!({ "details": data.take() });
+        }
+        data["reason"] = serde_json::json!(crate::rpc_reason::SESSION_USER_MOVED_TAB);
+        Self::Rpc(error)
+    }
+
     /// Convert this dispatch outcome into a structured [`RpcError`]
     /// suitable for sending back over the IPC line.
     pub fn into_rpc(self) -> RpcError {
@@ -370,7 +389,7 @@ impl ToolQueueRegistry {
             params,
             timeout,
             false,
-            inflight,
+            inflight.clone(),
             None,
             CANCEL_CLEANUP_TIMEOUT,
         )
@@ -380,7 +399,7 @@ impl ToolQueueRegistry {
         // while it is running, session.stop observes SessionBusy and retries
         // on a later sweep rather than interrupting the tool.
         self.sessions.touch(sid);
-        outcome
+        outcome.map_err(|error| error.with_session_end_reason(inflight.as_deref()))
     }
 
     pub fn activity(&self, sid: &SessionId) -> Result<DebugActivity, DispatchError> {
@@ -462,10 +481,11 @@ impl ToolQueueRegistry {
             cancel_cleanup_timeout: CANCEL_CLEANUP_TIMEOUT,
             session_id: sid.clone(),
         };
-        match forward_one(sid, &self.browsers, &self.sessions, &job).await {
-            Ok(v) => Ok(v),
-            Err(err) => Err(DispatchError::Rpc(err)),
-        }
+        forward_one(sid, &self.browsers, &self.sessions, &job)
+            .await
+            .map_err(|error| {
+                DispatchError::Rpc(error).with_session_end_reason(job.inflight.as_deref())
+            })
     }
 
     /// Stop accepting new jobs for `sid`, enqueue one final control RPC,
@@ -1333,6 +1353,17 @@ fn cancelled_error(entry: Option<&ToolInflightEntry>, default_msg: &str) -> RpcE
             ErrorCode::UserAborted,
             "tool dispatch interrupted by user".to_string(),
         ),
+        Some(CancelReason::UserMovedTab) => {
+            return RpcError {
+                code: ErrorCode::UserAborted,
+                message:
+                    "session ended because the user moved a controlled tab out of its Agent Window"
+                        .into(),
+                data: Some(
+                    serde_json::json!({ "reason": crate::rpc_reason::SESSION_USER_MOVED_TAB }),
+                ),
+            };
+        }
         Some(CancelReason::Cancelled) | None => (ErrorCode::Cancelled, default_msg.to_string()),
     };
     RpcError {
@@ -1581,6 +1612,21 @@ mod forward_one_cancel_reason_tests {
         let err = super::cancelled_error(Some(&g.entry()), "fallback");
         assert_eq!(err.code, ErrorCode::UserAborted);
         assert_eq!(err.message, "tool dispatch interrupted by user");
+    }
+
+    #[test]
+    fn user_moved_tab_cancellation_retains_terminal_reason() {
+        let reg = Arc::new(ToolInflightRegistry::new());
+        let sid = SessionId("ended".into());
+        let guard = reg.register("move".into(), sid.clone()).unwrap();
+        reg.cancel_session_with_reason(&sid, CancelReason::UserMovedTab);
+        let error = cancelled_error(Some(&guard.entry()), "fallback");
+        assert_eq!(error.code, ErrorCode::UserAborted);
+        assert_eq!(
+            error.data.unwrap()["reason"],
+            crate::rpc_reason::SESSION_USER_MOVED_TAB
+        );
+        assert!(error.message.contains("session ended"));
     }
 
     #[tokio::test]

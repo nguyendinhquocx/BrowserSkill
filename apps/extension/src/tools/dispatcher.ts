@@ -218,6 +218,7 @@ export class ToolDispatcher {
    * controllers. Made public for tests.
    */
   readonly inflightAbortControllers = new Map<string, AbortController>();
+  private readonly requestSessions = new Map<string, string>();
 
   constructor(deps: DispatcherDeps) {
     this.cooperation = deps.cooperation;
@@ -314,9 +315,17 @@ export class ToolDispatcher {
       }
     }
     this.inflightAbortControllers.clear();
+    this.requestSessions.clear();
     const exports = this.screenshotExports;
     this.screenshotExports = new ScreenshotExports((id) => this.sessions.has(id));
     void exports.dispose();
+  }
+
+  /** Revoke in-flight work locally; do not wait for the daemon's round trip. */
+  cancelSession(sessionId: string): void {
+    for (const [rpcId, owner] of this.requestSessions) {
+      if (owner === sessionId) this.inflightAbortControllers.get(rpcId)?.abort();
+    }
   }
 
   private async dispatch(msg: ProtocolFrame): Promise<void> {
@@ -361,6 +370,7 @@ export class ToolDispatcher {
     const operationParams = req.params as
       | { session_id?: string; _operation_id?: string }
       | undefined;
+    if (operationParams?.session_id) this.requestSessions.set(req.id, operationParams.session_id);
     let body: ResponseFrame;
     let startedSession: string | null = null;
     let debugTicket: DebugTicket | undefined;
@@ -464,6 +474,7 @@ export class ToolDispatcher {
       if (startsSession) this.pendingSessionStarts -= 1;
       this.debug?.after(debugTicket, "operation failed");
       this.inflightAbortControllers.delete(req.id);
+      this.requestSessions.delete(req.id);
       if (
         operationParams?.session_id &&
         this.activeDialogOperations.get(operationParams.session_id)?.request.id === req.id

@@ -1415,7 +1415,7 @@ describe("ToolDispatcher", () => {
       return { id: 7, windowId: 200, index: 4 };
     });
     vi.stubGlobal("chrome", {
-      tabs: { sendMessage, move },
+      tabs: { sendMessage, move, get: vi.fn(async () => ({ id: 7, windowId: 100 })) },
       windows: { get: vi.fn(async () => ({ id: 200 })) },
     });
     const { transport, sent, deliver } = fakeTransport();
@@ -1707,6 +1707,49 @@ describe("ToolDispatcher", () => {
     expect(dispatcher.inflightAbortControllers.has("r-1")).toBe(false);
     expect(sessions.has("aa44")).toBe(false);
     expect(sessions.list()).toEqual([]);
+  });
+
+  it("cancels only a released session and prevents its pending stop from closing preserved pages", async () => {
+    const { transport, sent, deliver } = fakeTransport();
+    let windowId = 10;
+    const remove = vi.fn(async () => {});
+    const sessions = new SessionManager({
+      agentWindow: {
+        create: async () => ({ windowId: windowId++, initialTabIds: [] }),
+        ensureActiveTab: async (id) => id,
+        remove,
+      },
+    });
+    await sessions.start("one");
+    await sessions.start("two");
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const detachSession = vi.fn(() => pending);
+    const dispatcher = new ToolDispatcher({
+      transport,
+      sessions,
+      cdp: { detachSession } as unknown as TestDispatcherCdp,
+    });
+    dispatcher.start();
+    deliver({ id: "one-stop", method: "tool.session_stop", params: { session_id: "one" } });
+    deliver({ id: "two-stop", method: "tool.session_stop", params: { session_id: "two" } });
+    await vi.waitFor(() => expect(detachSession).toHaveBeenCalledTimes(2));
+    sessions.release("one");
+    dispatcher.cancelSession("one");
+    expect(dispatcher.inflightAbortControllers.get("one-stop")?.signal.aborted).toBe(true);
+    expect(dispatcher.inflightAbortControllers.get("two-stop")?.signal.aborted).toBe(false);
+    finish();
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent).toContainEqual({
+      id: "one-stop",
+      error: expect.objectContaining({ code: "cancelled" }),
+    });
+    expect(sent).toContainEqual({ id: "two-stop", result: {} });
+    expect(remove).toHaveBeenCalledExactlyOnceWith(11);
+    expect(dispatcher.inflightAbortControllers.size).toBe(0);
+    dispatcher.stop();
   });
 
   it("cancel for an unknown rpc_id replies with cancelled=false", async () => {

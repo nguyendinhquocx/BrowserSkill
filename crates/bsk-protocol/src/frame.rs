@@ -56,6 +56,9 @@ pub enum EventKind {
     SessionActivity,
     #[serde(rename = "session.window_closed")]
     SessionWindowClosed,
+    /// The extension ended the session after a user moved a controlled tab.
+    #[serde(rename = "session.ended")]
+    SessionEnded,
     #[serde(rename = "session.user_interrupt")]
     SessionUserInterrupt,
     #[serde(rename = "session.interaction_changed")]
@@ -293,6 +296,17 @@ mod tests {
             back.payload.get("session_id").and_then(|v| v.as_str()),
             Some("sess-1"),
         );
+    }
+
+    #[test]
+    fn session_ended_round_trips_from_extension_shape() {
+        let wire = serde_json::json!({
+            "event": "session.ended",
+            "payload": { "session_id": "sess-1", "reason": "user_moved_tab", "tab_id": 42 },
+        });
+        let frame: Frame = serde_json::from_value(wire.clone()).unwrap();
+        assert!(matches!(&frame, Frame::Event(event) if event.event == EventKind::SessionEnded));
+        assert_eq!(serde_json::to_value(frame).unwrap(), wire);
     }
 
     #[test]

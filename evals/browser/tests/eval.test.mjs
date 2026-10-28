@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { runCommandTask } from "../lib/agent-runner.mjs";
 import { loadCaseManifests, validateCaseManifest } from "../lib/case-loader.mjs";
@@ -201,6 +202,52 @@ test("command adapter carries a run from process launch through oracle verificat
   });
 });
 
+test("command adapter keeps long run names valid for the event server", async () => {
+  await withServer(async (server, serverInfo) => {
+    const script = `
+      const [baseUrl, runId] = process.argv.slice(1);
+      const response = await fetch(baseUrl + "/api/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runId, type: "completed" }),
+      });
+      if (response.status !== 202) process.exitCode = 1;
+    `;
+    const task = {
+      ...getTask("navigation-history", cases),
+      id: "long-case-name-".repeat(4),
+      siteAssertions: [{ label: "completion", type: "completed", minCount: 1 }],
+      responseAssertions: [],
+      adapterAssertions: [],
+    };
+    const options = {
+      server,
+      serverInfo,
+      task,
+      adapter: {
+        command: process.execPath,
+        args: ["--input-type=module", "-e", script, "{baseUrl}", "{runId}"],
+        variant: "long-variant-name-".repeat(4),
+      },
+      adapterName: "long-agent-name-".repeat(4),
+      configDirectory: process.cwd(),
+      iteration: 123,
+      locale: "en",
+      timeoutMs: 5_000,
+    };
+    const first = await runCommandTask(options);
+    const second = await runCommandTask(options);
+    for (const result of [first, second]) {
+      assert.equal(result.execution.exitCode, 0);
+      assert.match(result.runId, /^[A-Za-z0-9._-]{1,120}$/);
+      assert.match(result.runId, /-123-[a-f0-9]{8}$/);
+      assert.equal(result.verification.status, "passed");
+      assert.equal(result.eventCount, 1);
+    }
+    assert.notEqual(first.runId, second.runId);
+  });
+});
+
 test("report summary keeps partial verification distinct from full verification", () => {
   const rows = summarizeReports([
     {
@@ -274,6 +321,34 @@ test("badcase scaffold creates a loadable, escaped, self-contained case", async 
     });
     assert.match(html, /Quoted `title` \$\{notCode\} &lt;unsafe&gt;/);
     assert.match(await readFile(result.files.readme, "utf8"), /issue-123/);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("badcase scaffold escapes URL characters in relative fixture imports", async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "browser-eval-import-"));
+  try {
+    const directoryNames = ["checkout#fragment", "checkout%20literal"];
+    if (process.platform !== "win32") directoryNames.push("checkout?query");
+    for (const directoryName of directoryNames) {
+      const helpers = join(temporaryRoot, directoryName, "lib");
+      await mkdir(helpers, { recursive: true });
+      for (const name of ["scaffold-case.mjs", "paths.mjs", "fixtures.mjs"]) {
+        await copyFile(new URL(`../lib/${name}`, import.meta.url), join(helpers, name));
+      }
+      const { scaffoldCase: scaffold } = await import(
+        pathToFileURL(join(helpers, "scaffold-case.mjs")).href
+      );
+      const result = await scaffold({
+        id: "escaped-import",
+        rootCasesDirectory: join(temporaryRoot, `cases-${directoryName}`),
+      });
+      const source = await readFile(result.files.fixture, "utf8");
+      assert.match(source, /from "\.\.\//);
+      const { default: fixture } = await import(pathToFileURL(result.files.fixture).href);
+      assert.match(fixture.render(), /CASE-ESCAPED_IMPORT/);
+    }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

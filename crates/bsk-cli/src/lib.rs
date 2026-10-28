@@ -10,6 +10,7 @@ pub mod rpc_reason {
     /// render why it vanished instead of a generic not-found.
     pub const SESSION_IDLE_TIMEOUT: &str = "session_idle_timeout";
     pub const SESSION_WINDOW_CLOSED: &str = "session_window_closed";
+    pub const SESSION_USER_MOVED_TAB: &str = "user_moved_tab";
     pub const BROWSER_DISCONNECTED: &str = "browser_disconnected";
     /// Extension-side: repeated observation identity failures on the
     /// same tab in a short window — the site reloads itself when the

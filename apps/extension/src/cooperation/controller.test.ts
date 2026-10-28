@@ -2145,6 +2145,45 @@ describe("tab management respects human control of the task window", () => {
     expect(other.windowId).toBe(200);
   });
 
+  it.each([
+    "input",
+    "hold",
+  ] as const)("rechecks return after %s during the source tab lookup", async (intervention) => {
+    const f = await fixture();
+    f.ctx.agentCreatedTabs.delete(7);
+    f.ctx.borrowedTabs.set(7, { tabId: 7, originalWindowId: 200, originalIndex: 0 });
+    const move = vi.fn(async (_id, props) => ({ ...f.tab, ...props }));
+    const get = vi.fn(async () => {
+      if (intervention === "input") f.change({ human: 1, editing: true, lastInput: 10000 });
+      else await f.controller.control(7, f.controller.view(7)!.revision, "hold");
+      return { ...f.tab } as chrome.tabs.Tab;
+    });
+    const params = { session_id: "shared", tab_id: 7 };
+    expect(
+      await f.controller.run(
+        { id: "return", method: "tool.tab_return", params },
+        f.cdp,
+        f.abort.signal,
+        (cdp, signal) =>
+          handleTabReturn(f.sessions, params, {
+            cdp,
+            signal,
+            tabs: { get, move, create: vi.fn(), remove: vi.fn(), update: vi.fn() },
+            windows: {
+              get: async () => ({ id: 200 }) as chrome.windows.Window,
+              getLastFocused: async () => ({ id: 200 }) as chrome.windows.Window,
+              create: vi.fn(),
+              remove: vi.fn(),
+            },
+            agentOverlayReset: { resetAgentOverlays: async () => {} },
+          }),
+      ),
+    ).toMatchObject({ data: { reason: "cooperation_sync_required", effect_state: "none" } });
+    expect(get).toHaveBeenCalled();
+    expect(move).not.toHaveBeenCalled();
+    expect(f.ctx.borrowedTabs.has(7)).toBe(true);
+  });
+
   it("rechecks return after locating the original window", async () => {
     const f = await fixture();
     f.ctx.agentCreatedTabs.delete(7);

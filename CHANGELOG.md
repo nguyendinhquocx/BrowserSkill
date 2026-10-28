@@ -9,6 +9,10 @@ Starting from 0.2.0, CLI / Extension / DSH Plugin share the same version number.
 
 ### Fixed
 
+- Extension: explain when the running bsk daemon is too old to connect, with
+  its version, a copyable update command and restart guidance in the popup.
+  A toolbar warning and a notification make the problem visible before opening
+  the popup; repeated reconnects do not repeat the notification.
 - CLI: argument parsing failures now honor `--json`, returning an
   `invalid_params` error on stdout with `data.reason: "cli_parse_error"`
   instead of leaving stdout empty. A misplaced `--session` / `--tab-id` now

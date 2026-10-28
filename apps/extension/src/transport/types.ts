@@ -24,6 +24,7 @@ export type ErrorCode =
 
 /** Stable `RpcError.data.reason` values for CLI hint selection. */
 export type RpcErrorReason =
+  | "user_moved_tab"
   | "cooperation_sync_required"
   | "control_authority_required"
   | "extract_params_invalid"
@@ -133,6 +134,16 @@ export type ResponseFrame = OkResponseFrame | ErrResponseFrame;
 export interface EventFrame {
   event: string;
   payload?: unknown;
+}
+
+/** Terminal user action: pages stay open, but the session cannot resume. */
+export interface SessionEndedEvent extends EventFrame {
+  event: "session.ended";
+  payload: {
+    session_id: string;
+    reason: "user_moved_tab";
+    tab_id: number;
+  };
 }
 
 export type ProtocolFrame = RequestFrame | ResponseFrame | EventFrame;

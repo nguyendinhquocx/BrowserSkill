@@ -82,7 +82,7 @@ export interface CdpRunner {
     guard: CdpDispatchGuard,
   ): Promise<T>;
   detach?(tabId: number, expectedAttachmentId?: string): Promise<void>;
-  getFrameGraph?(tabId: number): Promise<CdpFrameGraph>;
+  getFrameGraph?(tabId: number, signal?: AbortSignal): Promise<CdpFrameGraph>;
   getAttachmentId?(tabId: number): string | undefined;
   ensureAttachedToUrl?(tabId: number, expectedUrl: string | undefined): Promise<void>;
   acquireBackgroundExecution?(sessionId: string, tabId: number): Promise<void>;

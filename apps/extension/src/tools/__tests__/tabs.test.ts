@@ -625,7 +625,7 @@ describe("handleTabBorrow", () => {
     });
   });
 
-  it("returns a moved tab if its session ends before the borrow commits", async () => {
+  it("does not issue a compensating move after the borrowing session ends", async () => {
     const sm = new SessionManager({ agentWindow: fakeAgentWindow([100]) });
     await sm.start("aa11");
     const state: FakeTabState = {
@@ -645,7 +645,7 @@ describe("handleTabBorrow", () => {
         { tabs: api, approveBorrow: async () => true },
       ),
     ).toMatchObject({ code: "cancelled" });
-    expect(spies.move).toHaveBeenLastCalledWith(7, { windowId: 200, index: 4 });
+    expect(spies.move).toHaveBeenCalledExactlyOnceWith(7, { windowId: 100, index: -1 });
   });
 
   it.each([

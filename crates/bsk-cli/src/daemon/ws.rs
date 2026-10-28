@@ -577,6 +577,9 @@ async fn handle_inbound_text(state: &Arc<DaemonState>, client: &Arc<BrowserClien
             bsk_protocol::EventKind::SessionWindowClosed => {
                 handle_session_window_closed(state, &client.id, &ev.payload);
             }
+            bsk_protocol::EventKind::SessionEnded => {
+                handle_session_ended(state, &client.id, &ev.payload);
+            }
             bsk_protocol::EventKind::SessionUserInterrupt => {
                 handle_session_user_interrupt(state, &client.id, &ev.payload);
             }
@@ -697,15 +700,7 @@ fn handle_session_window_closed(
         );
         return;
     }
-    if super::sessions::forget_session(
-        &state.sessions,
-        &state.tool_queues,
-        &state.session_interrupts,
-        &session_id,
-        Some(crate::rpc_reason::SESSION_WINDOW_CLOSED),
-    ) {
-        state.transfers.release_session(&session_id.0);
-        state.dialog_operations.remove_session(&session_id.0);
+    if forget_browser_session(state, &session_id, crate::rpc_reason::SESSION_WINDOW_CLOSED) {
         info!(session = %session_id, "session removed: user closed Agent Window");
     } else {
         debug!(session = %session_id, "session.window_closed for unknown session id");
@@ -718,6 +713,79 @@ fn handle_session_window_closed(
             message = %failure.message,
             "borrowed tab could not be returned before Agent Window closed"
         );
+    }
+}
+
+/// Logical termination is independent of whether the browser window stays open.
+fn forget_browser_session(
+    state: &Arc<DaemonState>,
+    session_id: &super::sessions::SessionId,
+    reason: &'static str,
+) -> bool {
+    let removed = super::sessions::forget_session(
+        &state.sessions,
+        &state.tool_queues,
+        &state.session_interrupts,
+        session_id,
+        Some(reason),
+    );
+    if removed {
+        state.transfers.release_session(&session_id.0);
+        state.dialog_operations.remove_session(&session_id.0);
+    }
+    removed
+}
+
+fn handle_session_ended(state: &Arc<DaemonState>, sender: &BrowserId, payload: &serde_json::Value) {
+    #[derive(serde::Deserialize)]
+    struct Ended {
+        session_id: String,
+        reason: String,
+        tab_id: u64,
+    }
+    let Ok(ended) = serde_json::from_value::<Ended>(payload.clone()) else {
+        warn!("invalid session.ended payload");
+        return;
+    };
+    if ended.session_id.is_empty()
+        || ended.reason != crate::rpc_reason::SESSION_USER_MOVED_TAB
+        || ended.tab_id == 0
+    {
+        warn!("invalid session.ended reason or resource identity");
+        return;
+    }
+    let sid = super::sessions::SessionId(ended.session_id);
+    let Some(session) = state.sessions.get(&sid) else {
+        // Duplicates and late events must not cancel work for an unverified id.
+        debug!(session = %sid, "session.ended for unknown session id");
+        return;
+    };
+    if session.browser_id != *sender {
+        warn!(session = %sid, %sender, "ignoring session.ended from a browser that does not own this session");
+        return;
+    }
+
+    // Record the terminal cause on queued and forwarded calls before dropping
+    // the queue. This is not the resumable, one-shot user-interrupt marker.
+    cancel_session_tools(state, &sid, super::inflight::CancelReason::UserMovedTab);
+    if forget_browser_session(state, &sid, crate::rpc_reason::SESSION_USER_MOVED_TAB) {
+        info!(session = %sid, tab_id = ended.tab_id, "session ended: user moved a controlled tab");
+    }
+}
+
+fn cancel_session_tools(
+    state: &Arc<DaemonState>,
+    sid: &super::sessions::SessionId,
+    reason: super::inflight::CancelReason,
+) {
+    let snapshots = state.tool_inflight.cancel_session_with_reason(sid, reason);
+    for snap in snapshots {
+        if let (Some(browser_id), Some(ws_rpc_id)) = (snap.browser_id, snap.ws_rpc_id)
+            && let Err(err) =
+                super::cancel_forward::forward_cancel_to_browser(state, &browser_id, &ws_rpc_id)
+        {
+            warn!(%browser_id, %ws_rpc_id, %err, "failed to forward session cancellation to extension");
+        }
     }
 }
 
@@ -974,6 +1042,185 @@ mod session_user_interrupt_tests {
             state.sessions.get(&sid).is_some(),
             "non-owning browser must not be able to tear down another session"
         );
+    }
+
+    fn user_moved_tab_payload(sid: &SessionId) -> serde_json::Value {
+        serde_json::json!({ "session_id": sid.0, "reason": "user_moved_tab", "tab_id": 42 })
+    }
+
+    #[tokio::test]
+    async fn session_ended_cancels_running_and_queued_tools_and_retains_reason() {
+        use crate::daemon::browsers::{Liveness, next_browser_generation};
+        use crate::daemon::inflight::PromoteOutcome;
+        use bsk_protocol::{ErrorCode, Method};
+        use std::sync::Mutex;
+
+        let state = test_only_daemon_state();
+        let owner = BrowserId("owner-browser".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let browser = Arc::new(BrowserClient {
+            id: owner.clone(),
+            browser_name: "test".into(),
+            browser_version: "1".into(),
+            extension_version: "1".into(),
+            extension_protocol_version: "1".into(),
+            label: "test".into(),
+            sink: BrowserSink { tx },
+            pending: Mutex::new(Pending::default()),
+            generation: next_browser_generation(),
+            connected_at_ms: 0,
+            version_skew: false,
+            liveness: Liveness::default(),
+        });
+        state.browsers.insert(Arc::clone(&browser));
+        let sid = state.sessions.reserve_id(owner.clone(), 8, || 0).unwrap();
+        state.tool_queues.spawn(sid.clone());
+        let running = state
+            .tool_inflight
+            .register("running".into(), sid.clone())
+            .unwrap();
+        let queued = state
+            .tool_inflight
+            .register("queued".into(), sid.clone())
+            .unwrap();
+        let unrelated = state
+            .tool_inflight
+            .register("other".into(), SessionId("other".into()))
+            .unwrap();
+        let queues = Arc::clone(&state.tool_queues);
+        let current_sid = sid.clone();
+        let current_entry = running.entry();
+        let command = tokio::spawn(async move {
+            queues
+                .dispatch(
+                    &current_sid,
+                    Method::ToolTabList,
+                    serde_json::json!({ "session_id": current_sid.0 }),
+                    Duration::from_secs(5),
+                    Some(current_entry),
+                )
+                .await
+        });
+        let Frame::Request(request) = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("tool request expected");
+        };
+        assert_eq!(request.method, Method::ToolTabList);
+
+        handle_session_ended(&state, &owner, &user_moved_tab_payload(&sid));
+        assert_eq!(
+            running.entry().cancel_reason(),
+            Some(CancelReason::UserMovedTab)
+        );
+        assert_eq!(
+            queued.entry().cancel_reason(),
+            Some(CancelReason::UserMovedTab)
+        );
+        assert!(!unrelated.entry().is_cancelled());
+        assert_eq!(
+            queued
+                .entry()
+                .promote_to_forwarded_with(owner.clone(), "never".into(), || panic!(
+                    "queued work must not reach Chrome"
+                )),
+            PromoteOutcome::Cancelled
+        );
+        assert!(state.sessions.get(&sid).is_none());
+        assert!(!state.tool_queues.is_accepting(&sid));
+        assert!(!state.session_interrupts.try_consume(&sid));
+        let ended = state.sessions.end_info(&sid).unwrap();
+        assert_eq!(ended.reason, crate::rpc_reason::SESSION_USER_MOVED_TAB);
+
+        let Frame::Request(cancel) = rx.recv().await.unwrap() else {
+            panic!("cancel expected")
+        };
+        assert_eq!(cancel.method, Method::Cancel);
+        assert_eq!(cancel.params.unwrap()["rpc_id"], request.id);
+        browser.pending.lock().unwrap().resolve(ResponseFrame {
+            id: request.id,
+            body: ResponseBody::Err(RpcError {
+                code: ErrorCode::Cancelled,
+                message: "stopped".into(),
+                data: None,
+            }),
+        });
+        let error = command.await.unwrap().unwrap_err().into_rpc();
+        assert_eq!(error.code, ErrorCode::UserAborted);
+        assert_eq!(
+            error.data.unwrap()["reason"],
+            crate::rpc_reason::SESSION_USER_MOVED_TAB
+        );
+
+        let later = state
+            .tool_queues
+            .dispatch(
+                &sid,
+                Method::ToolTabList,
+                serde_json::json!({ "session_id": sid.0 }),
+                Duration::from_secs(1),
+                None,
+            )
+            .await
+            .unwrap_err()
+            .into_rpc();
+        assert_eq!(later.code, ErrorCode::NotFound);
+        assert_eq!(
+            later.data.unwrap()["reason"],
+            crate::rpc_reason::SESSION_USER_MOVED_TAB
+        );
+        handle_session_ended(&state, &owner, &user_moved_tab_payload(&sid));
+        assert_eq!(
+            state.sessions.end_info(&sid).unwrap().ended_unix_ms,
+            ended.ended_unix_ms
+        );
+        assert!(state.sessions.get(&sid).is_none());
+    }
+
+    #[test]
+    fn session_ended_rejects_foreign_browser_and_invalid_payloads() {
+        let state = test_only_daemon_state();
+        let owner = BrowserId("owner-browser".into());
+        let sid = state.sessions.reserve_id(owner.clone(), 8, || 0).unwrap();
+        let guard = state
+            .tool_inflight
+            .register("pending".into(), sid.clone())
+            .unwrap();
+        handle_session_ended(
+            &state,
+            &BrowserId("foreign".into()),
+            &user_moved_tab_payload(&sid),
+        );
+        for payload in [
+            serde_json::json!({ "session_id": sid.0, "reason": "unknown", "tab_id": 42 }),
+            serde_json::json!({ "session_id": sid.0, "reason": "user_moved_tab", "tab_id": 0 }),
+            serde_json::json!({ "session_id": sid.0, "reason": "user_moved_tab" }),
+        ] {
+            handle_session_ended(&state, &owner, &payload);
+        }
+        assert!(state.sessions.get(&sid).is_some());
+        assert!(state.sessions.end_info(&sid).is_none());
+        assert!(!guard.entry().is_cancelled());
+        assert!(!state.session_interrupts.try_consume(&sid));
+    }
+
+    #[test]
+    fn session_ended_does_not_cancel_an_unknown_session() {
+        let state = test_only_daemon_state();
+        let sid = SessionId("unknown".into());
+        let guard = state
+            .tool_inflight
+            .register("pending".into(), sid.clone())
+            .unwrap();
+        handle_session_ended(
+            &state,
+            &BrowserId("sender".into()),
+            &user_moved_tab_payload(&sid),
+        );
+        assert!(!guard.entry().is_cancelled());
+        assert!(state.sessions.end_info(&sid).is_none());
     }
 
     fn test_only_daemon_state() -> std::sync::Arc<DaemonState> {

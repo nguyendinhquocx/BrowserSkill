@@ -38,6 +38,11 @@ pub const CANCEL_RESPONSE_GRACE: Duration = Duration::from_secs(2);
 /// the original call's timeout because cancel must answer promptly.
 const CANCEL_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Keep the IPC connection alive long enough to receive the tool's timeout.
+pub(crate) fn ipc_timeout(timeout_ms: u32) -> Duration {
+    Duration::from_millis(u64::from(timeout_ms) + 15_000)
+}
+
 static OBSERVATION_DEPENDENCIES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 
 static OBSERVATION_CONTEXT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
@@ -291,9 +296,16 @@ async fn wait_for_sigint() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-mod context_tests {
-    use super::with_context;
+mod tests {
+    use super::{ipc_timeout, with_context};
     use serde_json::json;
+    use std::time::Duration;
+
+    #[test]
+    fn ipc_timeout_preserves_grace_at_the_largest_tool_timeout() {
+        assert_eq!(ipc_timeout(60_000), Duration::from_secs(75));
+        assert_eq!(ipc_timeout(u32::MAX).as_millis(), u32::MAX as u128 + 15_000);
+    }
 
     #[test]
     fn context_is_explicit_and_does_not_change_action_parameters() {

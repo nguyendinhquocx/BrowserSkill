@@ -171,7 +171,7 @@ async function collectObservationFacts<T extends FrameOwnedAxNode>(
   throwCaptureAborted(signal);
   let graph: CdpFrameGraph | undefined;
   try {
-    graph = await cdp.getFrameGraph?.(tabId);
+    graph = await cdp.getFrameGraph?.(tabId, signal);
   } catch (error) {
     forgetPendingAccessibility(axEnabled, error);
     if (isCaptureAbort(error)) throw error;

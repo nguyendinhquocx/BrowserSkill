@@ -178,6 +178,8 @@ function externalHrefHost(
 interface ResolveIndexes {
   domChildren: Map<SemanticNodeId, SemanticNodeId[]>;
   axChildren: Map<SemanticNodeId, SemanticNodeId[]>;
+  domSiblingIndex: Map<SemanticNodeId, number>;
+  axSiblingIndex: Map<SemanticNodeId, number>;
   domIdIndex: Map<string, SemanticNodeId>;
   labelForIndex: Map<string, SemanticNodeId[]>;
   domText: (nodeId: SemanticNodeId) => string | undefined;
@@ -188,11 +190,14 @@ interface ResolveIndexes {
 function buildIndexes(graph: SemanticGraph): ResolveIndexes {
   const domChildren = new Map<SemanticNodeId, SemanticNodeId[]>();
   const axChildren = new Map<SemanticNodeId, SemanticNodeId[]>();
+  const domSiblingIndex = new Map<SemanticNodeId, number>();
+  const axSiblingIndex = new Map<SemanticNodeId, number>();
   const domIdIndex = new Map<string, SemanticNodeId>();
   const labelForIndex = new Map<string, SemanticNodeId[]>();
   for (const node of graph.nodes.values()) {
     if (node.domParentId) {
       const children = domChildren.get(node.domParentId) ?? [];
+      domSiblingIndex.set(node.id, children.length);
       children.push(node.id);
       domChildren.set(node.domParentId, children);
     }
@@ -223,6 +228,9 @@ function buildIndexes(graph: SemanticGraph): ResolveIndexes {
         (bIndex < 0 ? Number.MAX_SAFE_INTEGER : bIndex)
       );
     });
+    for (let index = 0; index < children.length; index += 1) {
+      axSiblingIndex.set(children[index], index);
+    }
   }
 
   const textMemo = new Map<SemanticNodeId, string | undefined>();
@@ -305,6 +313,8 @@ function buildIndexes(graph: SemanticGraph): ResolveIndexes {
   return {
     domChildren,
     axChildren,
+    domSiblingIndex,
+    axSiblingIndex,
     domIdIndex,
     labelForIndex,
     domText,
@@ -357,7 +367,7 @@ function precedingAxText(
 ): string | undefined {
   if (!node.axParentId) return undefined;
   const siblings = indexes.axChildren.get(node.axParentId) ?? [];
-  const index = siblings.indexOf(node.id);
+  const index = indexes.axSiblingIndex.get(node.id) ?? -1;
   for (let offset = 1; offset <= 4 && index - offset >= 0; offset += 1) {
     const sibling = graph.nodes.get(siblings[index - offset]);
     const role = normalizeRole(axValue(sibling?.ax?.role)) ?? "";
@@ -379,7 +389,7 @@ function precedingDomText(
 ): string | undefined {
   if (!node.domParentId) return undefined;
   const siblings = indexes.domChildren.get(node.domParentId) ?? [];
-  const index = siblings.indexOf(node.id);
+  const index = indexes.domSiblingIndex.get(node.id) ?? -1;
   for (let offset = 1; offset <= 4 && index - offset >= 0; offset += 1) {
     const sibling = graph.nodes.get(siblings[index - offset]);
     const siblingRole = sibling
@@ -453,7 +463,7 @@ function nearbyText(
 ): string | undefined {
   if (!node.domParentId) return undefined;
   const siblings = indexes.domChildren.get(node.domParentId) ?? [];
-  const index = siblings.indexOf(node.id);
+  const index = indexes.domSiblingIndex.get(node.id) ?? -1;
   if (index < 0) return undefined;
   const texts = siblings
     .slice(Math.max(0, index - 3), index + 4)
@@ -487,6 +497,7 @@ export function resolveSemanticGraph(
     const frame = graph.frames.get(node.frameId);
     const tag = node.dom?.tag.toLowerCase() ?? "";
     const inForm = node.dom?.inForm;
+    const nearby = nearbyText(node, graph, indexes);
     const vom: ResolvedSemanticNode["vom"] = {
       tag,
       rect: node.dom?.rect ?? null,
@@ -508,7 +519,7 @@ export function resolveSemanticGraph(
         : {}),
       attrs,
       ...(clean(node.dom?.textContent) ? { text: clean(node.dom?.textContent) } : {}),
-      ...(nearbyText(node, graph, indexes) ? { nearbyText: nearbyText(node, graph, indexes) } : {}),
+      ...(nearby ? { nearbyText: nearby } : {}),
       inputState: inputState(node, role, sourceValue, isSensitive),
       sensitive: isSensitive,
       // An available AX result is authoritative, including ignored/nonmodal nodes.

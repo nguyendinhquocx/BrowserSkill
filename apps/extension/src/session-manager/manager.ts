@@ -336,8 +336,19 @@ export class SessionManager {
     if (!options.dropOnly) {
       await this.agentWindow.remove(ctx.agentWindowId);
     }
+    if (this.sessions.get(sessionId) === ctx) this.release(sessionId);
+    return ctx;
+  }
+
+  /** End ownership synchronously, without moving or closing any browser page. */
+  release(sessionId: string): SessionContext | null {
+    const ctx = this.sessions.get(sessionId);
+    if (!ctx) return null;
     this.sessions.delete(sessionId);
     this.windowIndex.delete(ctx.agentWindowId);
+    for (const [tabId, owner] of this.borrowReservations) {
+      if (owner === sessionId) this.borrowReservations.delete(tabId);
+    }
     return ctx;
   }
 

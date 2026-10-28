@@ -156,7 +156,7 @@ async fn handshake_skew_when_protocol_minor_differs() {
     let mut ws = open_ws(handle.ws_addr()).await;
     let resp = send_handshake_with_floors(
         &mut ws,
-        "1.6",
+        "1.7",
         env!("CARGO_PKG_VERSION"),
         Some("0.0.0"),
         Some("1.5"),
@@ -212,6 +212,28 @@ async fn handshake_rejected_when_peer_protocol_major_is_below_daemon() {
 }
 
 #[tokio::test]
+async fn handshake_keeps_pre_terminal_event_extension_connected() {
+    let (handle, _sock) = spawn_daemon().await;
+    let mut ws = open_ws(handle.ws_addr()).await;
+    let response = send_handshake_with_floors(
+        &mut ws,
+        "1.5",
+        env!("CARGO_PKG_VERSION"),
+        Some("0.0.0"),
+        Some("1.5"),
+    )
+    .await;
+    assert!(matches!(response.body, ResponseBody::Ok(_)));
+    let browser = handle
+        .state()
+        .browsers
+        .get(&bsk::daemon::browsers::BrowserId(TEST_EXT_ID.into()))
+        .expect("older extension stays registered");
+    assert!(browser.version_skew);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn handshake_legacy_ext_without_protocol_floor_still_ok() {
     let (handle, _sock) = spawn_daemon().await;
     let mut ws = open_ws(handle.ws_addr()).await;
@@ -242,7 +264,7 @@ async fn status_surfaces_version_skew_for_skewed_browser() {
         browser_name: "chrome".into(),
         browser_version: "131.0".into(),
         extension_version: "9.9.9".into(),
-        extension_protocol_version: "1.6".into(),
+        extension_protocol_version: "1.5".into(),
         label: "Older".into(),
         sink: bsk::daemon::browsers::BrowserSink { tx },
         pending: Mutex::new(bsk::daemon::browsers::Pending::default()),
@@ -269,7 +291,7 @@ async fn status_surfaces_version_skew_for_skewed_browser() {
         .iter()
         .find(|s| s.instance_id == "skew-only-test")
         .expect("status must list our skew client");
-    assert_eq!(skew.client_protocol_version, "1.6");
+    assert_eq!(skew.client_protocol_version, "1.5");
     assert_eq!(skew.server_protocol_version, PROTOCOL_VERSION);
     assert_eq!(skew.client_version, "9.9.9");
     let entry = status

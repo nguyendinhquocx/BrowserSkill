@@ -212,6 +212,7 @@ export interface LifecycleWaitGuard {
   loaderId?: string | (() => string | null | undefined);
   beforeLoaderId?: string | null;
   followNavigations?: boolean;
+  sameDocument?: { frameId: string | null; url: string; allow?: () => boolean };
 }
 
 function currentLoaderId(guard: LifecycleWaitGuard | undefined): string {
@@ -256,6 +257,7 @@ function startLifecycleWait(
     const pendingRequests = new Set<string>();
     let navigationRevision = 0;
     let pendingLifecycle: { name: string; frameId?: string; loaderId?: string } | null = null;
+    let pendingSameDocument: { frameId: string; revision: number } | undefined;
     let listenerSub: { dispose(): void } | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let dialogBudgetUsed = false;
@@ -328,7 +330,34 @@ function startLifecycleWait(
         finish({ reached: "match", lastLifecycle: pendingLifecycle.name });
       }
     };
-    refresh = maybeFinishPending;
+    const acceptSameDocument = () => {
+      if (
+        settled ||
+        !pendingSameDocument ||
+        pendingSameDocument.frameId !== currentFrameId() ||
+        pendingSameDocument.revision !== navigationRevision ||
+        guard?.sameDocument?.allow?.() === false ||
+        pendingRequests.size ||
+        !document.reuseInitial(guard?.beforeLoaderId ?? undefined)
+      )
+        return;
+      pendingSameDocument = undefined;
+      navigationRevision += 1;
+      noteRelevantLifecycle("commit");
+      if (targetName === "commit") {
+        finish({ reached: "match", lastLifecycle: "commit" });
+        return;
+      }
+      // Chrome replays this document's recorded phases, including network idle.
+      // A reused document will not emit a new load event just for a URL change.
+      void cdp
+        .send(expectedTabId, "Page.setLifecycleEventsEnabled", { enabled: true })
+        .catch(() => {});
+    };
+    refresh = () => {
+      acceptSameDocument();
+      maybeFinishPending();
+    };
 
     tryProbe = async (mode: LifecycleProbeMode, beforeReadyState: string | null = null) => {
       if (settled) return;
@@ -404,8 +433,8 @@ function startLifecycleWait(
             if (method === "Page.frameRequestedNavigation") {
               const p = params as { frameId?: string; disposition?: string };
               if (
-                currentFrameId() &&
-                p.frameId === currentFrameId() &&
+                p.frameId &&
+                p.frameId === (currentFrameId() || guard.sameDocument?.frameId) &&
                 (!p.disposition || p.disposition === "currentTab")
               ) {
                 document.begin();
@@ -420,12 +449,14 @@ function startLifecycleWait(
                 loaderId?: string;
                 type?: string;
               };
+              const activeLoader =
+                document.id ?? (pendingSameDocument ? guard.beforeLoaderId : undefined);
               if (
                 p.type === "Document" &&
-                p.frameId === currentFrameId() &&
+                p.frameId === (currentFrameId() || guard.sameDocument?.frameId) &&
                 p.requestId &&
-                document.id &&
-                p.loaderId !== document.id &&
+                activeLoader &&
+                p.loaderId !== activeLoader &&
                 !document.isRetired(p.loaderId)
               ) {
                 document.begin();
@@ -446,7 +477,16 @@ function startLifecycleWait(
               method === "Page.frameStoppedLoading" ||
               method === "Page.navigatedWithinDocument"
             ) {
-              const p = params as { frameId?: string };
+              const p = params as { frameId?: string; url?: string };
+              if (
+                method === "Page.navigatedWithinDocument" &&
+                p.frameId &&
+                p.frameId === guard.sameDocument?.frameId &&
+                p.url === guard.sameDocument?.url
+              ) {
+                pendingSameDocument = { frameId: p.frameId, revision: navigationRevision };
+                acceptSameDocument();
+              }
               if (p.frameId === currentFrameId()) void reconcilePending();
               return;
             }
@@ -701,6 +741,7 @@ async function recoverBrowserNavigation(
   waitUntil: WaitUntil,
   timeoutMs: number,
   requestedUrl?: string,
+  allowSameDocument = false,
 ): Promise<ReloadResult | RpcError> {
   const tabId = target.tabId;
   const controlled = isAgentControlledTab(ctx, tabId);
@@ -727,7 +768,7 @@ async function recoverBrowserNavigation(
       waitUntil,
       timeoutMs,
       abort.signal,
-      async (event, signal) => {
+      async (event, signal, sameDocument) => {
         // Chrome metadata may advance before its corresponding event arrives.
         // An obsolete handoff waits for that event; it is not a navigation error.
         const isCurrent = async () => {
@@ -745,7 +786,7 @@ async function recoverBrowserNavigation(
           if (!(await isCurrent())) return false;
           await deps.cdp.send(tabId, "Page.enable", {});
           if (!(await isCurrent())) return false;
-          if (waitUntil === "networkidle") {
+          if (waitUntil === "networkidle" || (sameDocument && waitUntil !== "commit")) {
             const frame = await readMainFrameInfo(deps.cdp, tabId);
             if (!(await isCurrent())) return false;
             if (!frame.frameId) throw new Error("No main frame after navigation");
@@ -756,7 +797,7 @@ async function recoverBrowserNavigation(
               deps.cdp,
               tabId,
               frame.frameId,
-              "networkIdle",
+              cdpLifecycleName(waitUntil),
               remaining,
               waiting.signal,
               { loaderId: frame.loaderId ?? undefined },
@@ -778,6 +819,7 @@ async function recoverBrowserNavigation(
         }
       },
       requestedUrl,
+      allowSameDocument,
     );
     if (outcome.reached === "failed") return outcome.error;
     if (outcome.reached === "cancelled" || abort.signal.aborted)
@@ -838,6 +880,7 @@ export async function handleNavigate(
         waitUntil,
         timeoutMs,
         params.url,
+        true,
       );
       if (isRpcError(recovered)) return recovered;
       return attachDialogs(deps.cdp, target.tabId, dialogCursor, { ...recovered, url: params.url });
@@ -845,8 +888,10 @@ export async function handleNavigate(
     const expected = cdpLifecycleName(waitUntil);
     const beforeReadyState = await probeMainFrameReadyState(deps.cdp, target.tabId);
     const beforeFrame = await readMainFrameInfo(deps.cdp, target.tabId);
+    const sameDocumentUrl = new URL(params.url).href;
     let frameId = "";
     let loaderId = "";
+    let sameDocumentNavigation = false;
     const waitAbort = linkedAbortSignal(deps.signal);
     const wait = startLifecycleWait(
       deps.cdp,
@@ -859,6 +904,11 @@ export async function handleNavigate(
         loaderId: () => loaderId,
         beforeLoaderId: beforeFrame.loaderId,
         followNavigations: true,
+        sameDocument: {
+          frameId: beforeFrame.frameId,
+          url: sameDocumentUrl,
+          allow: () => sameDocumentNavigation,
+        },
       },
     );
     const waitPromise = wait.promise;
@@ -894,6 +944,7 @@ export async function handleNavigate(
     }
     frameId = nav.frameId ?? "";
     loaderId = nav.loaderId ?? "";
+    sameDocumentNavigation = !nav.loaderId && !nav.errorText;
     wait.refresh();
     if (nav.errorText) {
       waitAbort.abort();
@@ -983,6 +1034,8 @@ async function handleHistory(
         (api) => (direction === "back" ? api.goBack(target.tabId) : api.goForward(target.tabId)),
         waitUntil,
         timeoutMs,
+        undefined,
+        true,
       );
       if (isRpcError(recovered)) return recovered;
       return attachDialogs(deps.cdp, target.tabId, dialogCursor, {
@@ -1021,7 +1074,11 @@ async function handleHistory(
       expected,
       timeoutMs,
       waitAbort.signal,
-      { beforeLoaderId: beforeFrame.loaderId, followNavigations: true },
+      {
+        beforeLoaderId: beforeFrame.loaderId,
+        followNavigations: true,
+        sameDocument: { frameId: beforeFrame.frameId, url: targetEntry.url },
+      },
     );
     const waitPromise = wait.promise;
     try {
