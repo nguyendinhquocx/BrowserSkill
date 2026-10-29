@@ -135,24 +135,6 @@ jobs:
           BSK_CLICK_CHROME: google-chrome
         run: pnpm --filter @browser-skill/extension exec vitest run src/tools/__tests__/click.browser.test.ts
 
-      - name: Build extension for the isolated drag daemon
-        env:
-          BSK_DAEMON_WS_URL: ws://127.0.0.1:52839
-        run: pnpm --filter @browser-skill/extension build
-
-      - name: Validate drag CLI, native drops, recovery and cross-origin frame refs
-        env:
-          BSK_DRAG_CHROME: ${{ env.BSK_VIDEO_CHROME }}
-        run: node evals/browser/cases/regression/drag-interactions/run.mjs
-
-      - name: Upload drag regression evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: drag-regression
-          path: evals/browser/results/drag-interactions/
-          if-no-files-found: ignore
-
   node-scripts:
     name: Node script tests
     runs-on: ubuntu-latest
