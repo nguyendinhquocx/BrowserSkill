@@ -14,6 +14,7 @@ pub mod dialog_control;
 pub mod dialogs;
 pub mod doctor;
 pub mod download;
+pub mod drag;
 pub mod emulate;
 pub mod ensure_daemon;
 pub mod error;
@@ -27,6 +28,7 @@ pub(crate) mod interaction_policy;
 pub mod logs;
 pub mod navigate;
 pub mod network;
+pub mod observation_view;
 pub mod observe;
 pub(crate) mod protocol;
 pub mod record;
@@ -38,6 +40,7 @@ pub mod scroll;
 pub mod session;
 pub mod snapshot;
 pub mod status;
+pub mod step;
 pub mod tab;
 pub mod update;
 pub mod upload;
@@ -124,6 +127,10 @@ pub enum Command {
     Operation(dialog_control::OperationCmd),
     /// Cooperate with a person on the same browser tab.
     Cooperate(cooperate::CooperateArgs),
+    /// Execute one action, await a known condition, and return synchronized state.
+    Step(step::StepArgs),
+    /// Read a saved observation locally, without refreshing refs or contacting the browser.
+    View(observation_view::ViewArgs),
     /// Manage the local `bsk` daemon process.
     #[command(subcommand)]
     Daemon(DaemonCmd),
@@ -205,6 +212,9 @@ pub enum Command {
 
     /// Dispatch a native mouse-wheel event at the viewport centre or an element.
     Wheel(WheelArgs),
+
+    /// Drag an element to another element or by a relative offset.
+    Drag(drag::DragArgs),
 
     /// Scroll a snapshot ref or CSS selector into the visible viewport.
     #[command(name = "scroll-to")]

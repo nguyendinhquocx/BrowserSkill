@@ -42,24 +42,26 @@ test("case manifests are discovered, ordered, and grouped into suites", () => {
       "diagnostics",
       "mobile-emulation",
       "generated-form",
+      "drag-interactions",
       "fill-editor-roots",
       "oopif-scrollbars",
+      "range-selection",
       "snapshot-coordinates",
     ],
   );
   assert.deepEqual(repositorySummary(cases, fixtureRegistry).suites, {
     core: 6,
     matrix: 1,
-    regression: 3,
+    regression: 5,
   });
 });
 
 test("repository validation links every case to a fixture and valid workflow evidence", () => {
   assert.deepEqual(validateRepositoryCases(cases, fixtureRegistry), []);
   const summary = repositorySummary(cases, fixtureRegistry);
-  assert.equal(summary.cases, 10);
-  assert.equal(summary.fixtureModules, 11);
-  assert.equal(summary.fixtureRoutes, 19);
+  assert.equal(summary.cases, 12);
+  assert.equal(summary.fixtureModules, 13);
+  assert.equal(summary.fixtureRoutes, 21);
 });
 
 test("manifest validation rejects unknown operations and incomplete workflow steps", () => {
@@ -276,11 +278,11 @@ test("report summary keeps partial verification distinct from full verification"
   assert.equal(rows[0].errors, 1);
 });
 
-test("coverage inventory contains all 28 operations and three manual lanes", () => {
+test("coverage inventory contains all 29 operations and three manual lanes", () => {
   const coverage = buildOperationCoverage(cases);
   const operations = coverage.map(({ operation }) => operation);
-  assert.equal(operations.length, 28);
-  assert.equal(new Set(operations).size, 28);
+  assert.equal(operations.length, 29);
+  assert.equal(new Set(operations).size, 29);
   assert.deepEqual(
     coverage.filter(({ directSmoke }) => !directSmoke).map(({ operation }) => operation),
     ["tabs.borrow", "tabs.return", "assist.request-help"],
@@ -360,7 +362,7 @@ test("CLI accepts pnpm separator and supports suite and tag filters", async () =
     timeoutMs: 5_000,
   });
   assert.equal(coverageResult.exitCode, 0, coverageResult.stderr);
-  assert.equal(JSON.parse(coverageResult.stdout).length, 28);
+  assert.equal(JSON.parse(coverageResult.stdout).length, 29);
 
   const coreResult = await runProcess(
     process.execPath,

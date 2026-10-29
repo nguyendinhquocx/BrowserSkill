@@ -595,18 +595,22 @@ describe("shared-tab dispatch fences", () => {
     const run = (
       f: Awaited<ReturnType<typeof fixture>>,
       context: string,
-      action: { ref?: string; dependsOn?: string[]; key?: string },
+      action: { ref?: string; dependsOn?: string[]; key?: string; to?: string },
     ) => {
       f.change({ structure: f.controller.view(7)!.revision + 100 });
       return f.controller.run(
         {
           id: "live",
-          method: action.key ? "tool.press" : "tool.click",
+          method: action.to ? "tool.drag" : action.key ? "tool.press" : "tool.click",
           params: {
             session_id: "shared",
             tab_id: 7,
             context_id: context,
-            ...(action.ref ? { ref: action.ref } : {}),
+            ...(action.to
+              ? { source: { ref: action.ref }, target: { ref: action.to } }
+              : action.ref
+                ? { ref: action.ref }
+                : {}),
             ...(action.key ? { key: action.key } : {}),
             ...(action.dependsOn ? { depends_on: action.dependsOn } : {}),
           },
@@ -620,7 +624,7 @@ describe("shared-tab dispatch fences", () => {
     /** One learning refusal, then `attempts` fresh-sync actions all succeed. */
     const learnsThenActs = async (
       build: (tick: number) => VomScene,
-      action: { ref?: string; dependsOn?: string[] },
+      action: { ref?: string; dependsOn?: string[]; to?: string },
       attempts = 2,
     ) => {
       live(build);
@@ -634,7 +638,7 @@ describe("shared-tab dispatch fences", () => {
     /** Every fresh-sync action keeps being refused without dispatching input. */
     const keepsRefusing = async (
       build: (tick: number) => VomScene,
-      action: { ref?: string; dependsOn?: string[]; key?: string },
+      action: { ref?: string; dependsOn?: string[]; key?: string; to?: string },
     ) => {
       live(build);
       refs();
@@ -648,6 +652,31 @@ describe("shared-tab dispatch fences", () => {
       expect(f.native).not.toHaveBeenCalled();
     };
     const clock = (tick: number) => `10:00:0${tick}`;
+
+    it("learns unrelated live text for a drag while protecting both endpoints", () =>
+      learnsThenActs(
+        page((tick) => [
+          [1, null, "main"],
+          [2, 1, "region", { name: "Source" }],
+          [3, 2, "button", { name: "Card" }],
+          [5, 1, "region", { name: "Destination" }],
+          [6, 5, "button", { name: "Drop here" }],
+          [4, 1, "span", { text: clock(tick) }],
+        ]),
+        { ref: "e3", to: "e6" },
+      ));
+    it("keeps a drag destination exact when dependencies mention only its source", () =>
+      keepsRefusing(
+        page((tick) => [
+          [1, null, "main"],
+          [2, 1, "region", { name: "Source" }],
+          [3, 2, "button", { name: "Card" }],
+          [5, 1, "region", { name: "Destination" }],
+          [6, 5, "button", { name: "Drop here" }],
+          [7, 5, "span", { text: clock(tick) }],
+        ]),
+        { ref: "e3", to: "e6", dependsOn: ["e3"] },
+      ));
 
     it("tolerates a clock beside a button directly inside <main>", () =>
       learnsThenActs(
@@ -2280,6 +2309,95 @@ describe("default collaboration preserves the original unattended lifetime", () 
     expect(f.controller.enabled(8)).toBe(true);
     expect(f.ctx.agentCreatedTabs.has(8)).toBe(true);
     expect(f.sessionActivity).toHaveBeenLastCalledWith("shared", false);
+  });
+});
+
+describe.each([false, true])("selection action guards, explicit dependency=%s", (scoped) => {
+  const scene = (attrs: Record<string, string>): VomScene => ({
+    viewport: { width: 800, height: 600 },
+    nodes: [
+      { id: 1, parentId: null, tag: "main", role: "main", name: "" },
+      { id: 4, parentId: 1, tag: "button", role: "button", name: "16:00", attrs },
+    ].map((node) => ({
+      ...node,
+      backendNodeId: node.id,
+      frameId: "frame",
+      rect: { x: 0, y: 0, w: 20, h: 20 },
+      paintOrder: 1,
+      position: "static",
+      pointerEvents: "auto",
+    })),
+  });
+  const check = async (
+    before: Record<string, string>,
+    after: Record<string, string>,
+    allowed: boolean,
+  ) => {
+    vi.mocked(handleSnapshot).mockImplementationOnce(async (_m, _p, options) => {
+      options!.onScene?.(scene(before));
+      return { text: "16:00", ref_count: 1, tab_id: 7, truncated: false };
+    });
+    vi.mocked(captureVomObservation).mockImplementation(async (_c, _t, _u, options) => {
+      options?.onScene?.(scene(after));
+      return {} as Awaited<ReturnType<typeof captureVomObservation>>;
+    });
+    vi.mocked(resolveActionTarget).mockResolvedValue({
+      backendNodeId: 4,
+      frameId: "frame",
+      cdpTarget: { tabId: 7 },
+      tab: { tabId: 7, windowId: 100, active: true },
+    });
+    const f = await fixture();
+    // Only attributes change: identity, text, structure and human input stay fixed.
+    f.change({});
+    const result = await f.controller.run(
+      {
+        id: "selection",
+        method: "tool.click",
+        params: {
+          session_id: "shared",
+          tab_id: 7,
+          context_id: f.first.context_id,
+          ref: "e4",
+          ...(scoped ? { depends_on: ["e4"] } : {}),
+        },
+      },
+      f.cdp,
+      f.abort.signal,
+      (runner) => runner.send(7, "Input.dispatchMouseEvent", { type: "mousePressed" }),
+    );
+    if (allowed) {
+      expect(result).toEqual({});
+      expect(f.native).toHaveBeenCalledOnce();
+    } else {
+      expect(result).toMatchObject({
+        data: { reason: "cooperation_sync_required", effect_state: "none" },
+      });
+      expect(f.native).not.toHaveBeenCalled();
+    }
+  };
+
+  it.each([
+    ["class", "cell", "cell selected"],
+    ["class", "cell", "cell is-selected"],
+    ["data-selected", "false", "true"],
+    ["data-state", "unselected", "selected"],
+    ["aria-selected", "false", "true"],
+  ])("rejects selection changes in %s (%s to %s and back)", async (key, before, after) => {
+    await check({ [key]: before }, { [key]: after }, false);
+    await check({ [key]: after }, { [key]: before }, false);
+  });
+
+  it.each([
+    [{ class: "cell" }, { class: "cell hovered active" }],
+    [{ class: "cell selected" }, { class: "hovered is-selected cell" }],
+    [{ "data-selected": "true" }, { "data-state": "selected", class: "hovered" }],
+    [
+      { "aria-selected": "false", class: "selected" },
+      { "aria-selected": "false", "data-selected": "true", class: "hovered" },
+    ],
+  ])("allows unchanged selection evidence: %j to %j", async (before, after) => {
+    await check(before as Record<string, string>, after as Record<string, string>, true);
   });
 });
 
