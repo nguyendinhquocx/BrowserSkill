@@ -433,6 +433,10 @@ export class CooperationController implements ControlAuthority {
     state.revision++;
     this.deps.changed(state.tabId);
   }
+  private clearWindowObservations(sessionId: string) {
+    // Window geometry can change every tab's layout without a DOM mutation.
+    for (const tab of this.tabs.values()) if (tab.sessionId === sessionId) tab.baseline = undefined;
+  }
   receive(tabId: number, frameId: number, frame: FrameState, lease?: string) {
     const state = this.tabs.get(tabId);
     if (!state || (lease !== undefined && lease !== state.lease)) return;
@@ -823,7 +827,7 @@ export class CooperationController implements ControlAuthority {
             }),
           state: { ...this.view(state.tabId), mode: "ready" },
           guidance: targetPolicy
-            ? "This context remains valid for DOM-targeted actions until human control or the document changes. Supplementary reads do not invalidate it. Use explicit expect checks for business facts such as price, recipient or record ID. Scripts, untargeted keys and visual clicks require this sync's observation_id and retain strict content checks. Never replay an uncertain action; inspect its result first."
+            ? "This context remains valid for DOM-targeted actions until human control or the document changes. Supplementary reads do not invalidate it. Use explicit expect checks for business facts such as price, recipient or record ID. Scripts, untargeted keys and visual clicks require this sync's top-level observation_id (not observation.observation_id) and retain strict content checks. Never replay an uncertain action; inspect its result first."
             : "Continue toward the assigned goal using this current state. Incorporate helpful progress and correct recoverable mistakes. Page activity is not a change of goal. Each context authorizes one action; sync after it. By default the whole page is checked. Text that changes by itself (clocks, counters) is reported once; after the next sync it no longer blocks actions on a ref or selector unless it shares a form, list, dialog, panel or other container with the target. Keys without a ref or selector can use explicit dependencies, while their actual focused region stays protected; uncertain focus and other untargeted actions keep the exact whole-page check. To tolerate other unrelated updates, declare all observed decision regions with --depends-on refs/selectors (plugin: dependsOn); the target region and form values remain protected. Verify completion and prior submissions from application evidence.",
         };
       } finally {
@@ -892,6 +896,7 @@ export class CooperationController implements ControlAuthority {
         sent ? "unknown" : "none",
       );
     } finally {
+      if (sent && method === "tool.window_resize") this.clearWindowObservations(state.sessionId);
       state.working = false;
       if (method === "tool.navigate") await this.observeTab(state.tabId);
       this.changed(state);
@@ -1475,7 +1480,7 @@ export class CooperationController implements ControlAuthority {
           "observation_required",
           "This action requires an unused strict observation from cooperate sync",
           "observation",
-          "Synchronize, inspect the result and pass its observation_id explicitly with --observation (plugin: observationId).",
+          "Synchronize, inspect the result and pass the sync reply's top-level observation_id, not observation.observation_id, explicitly with --observation (plugin: observationId).",
         );
       if (!visual && (primaryTarget?.ref || primaryTarget?.selector)) {
         const resolved = await resolveActionTarget(
@@ -1698,6 +1703,8 @@ export class CooperationController implements ControlAuthority {
       );
     } finally {
       finished = true;
+      if (sent && req.method === "tool.window_resize")
+        this.clearWindowObservations(state.sessionId);
       if (state.interruption === intervention) state.interruption = undefined;
       if (state.completion === completion) state.completion = undefined;
       state.working = false;
