@@ -271,6 +271,21 @@ fn json_error_string(err: &CliError, exit: u8, hint: Option<&str>) -> String {
         .unwrap_or_else(|_| "{\"message\":\"failed to encode error\"}".into())
 }
 
+/// The same `{ code, message, hint, exit_code, data }` payload `--json`
+/// prints, for callers that return errors as data (the MCP server).
+pub(crate) fn json_error_value(err: &CliError) -> serde_json::Value {
+    let render_info = render_info_for(err);
+    let body = JsonError {
+        code: err.code(),
+        message: err.to_string(),
+        hint: hint_for(err, render_info.as_ref()),
+        exit_code: err.exit_code(),
+        data: err.data().cloned(),
+    };
+    serde_json::to_value(&body)
+        .unwrap_or_else(|_| serde_json::json!({"message": "failed to encode error"}))
+}
+
 /// Renderer extension hook for commands that want to inject a
 /// structured "extra section" between the centralised summary and
 /// the centralised hint (review I3 fix to round-1).
@@ -316,9 +331,11 @@ fn hint_for<'a>(
             render_info
                 .and_then(|info| info.hint)
                 .or_else(|| match err {
-                    CliError::Local(error) => recovery_hint(error).or(Some(
-                        "is the daemon running? try `bsk daemon start` or `bsk status`",
-                    )),
+                    CliError::Local(error) => recovery_hint(error)
+                        .or_else(|| super::update::source_recovery_hint(error))
+                        .or(Some(
+                            "is the daemon running? try `bsk daemon start` or `bsk status`",
+                        )),
                     _ => None,
                 })
         })
@@ -788,5 +805,42 @@ mod tests {
             serde_json::from_str(&json_error_string(&error, 1, hint)).unwrap();
         assert_eq!(rendered["data"]["expected"], "$12");
         assert_eq!(rendered["data"]["effect_state"], "none");
+    }
+}
+
+#[cfg(test)]
+mod action_timeout_render_tests {
+    use super::*;
+
+    #[test]
+    fn cli_and_mcp_preserve_timeout_evidence_without_blind_retry_advice() {
+        for effect in ["none", "unknown", "committed"] {
+            let data = serde_json::json!({
+                "reason": "action_deadline",
+                "phase": "execution",
+                "effect_state": effect,
+                "operation": "tool.fill"
+            });
+            let error = CliError::from_rpc(RpcError {
+                code: ErrorCode::Timeout,
+                message: "tool RPC timed out after 400ms".into(),
+                data: Some(data.clone()),
+            });
+            let mcp = json_error_value(&error);
+            let render_info = render_info_for(&error);
+            let cli: serde_json::Value = serde_json::from_str(&json_error_string(
+                &error,
+                error.exit_code(),
+                hint_for(&error, render_info.as_ref()),
+            ))
+            .unwrap();
+            assert_eq!(cli, mcp);
+            assert_eq!(cli["data"], data);
+            assert_eq!(cli["exit_code"], 4);
+            let hint = cli["hint"].as_str().unwrap();
+            assert!(hint.contains("inspect the application result"));
+            assert!(hint.contains("do not replay"));
+            assert!(!hint.contains("retry the command"));
+        }
     }
 }

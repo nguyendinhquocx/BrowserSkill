@@ -130,6 +130,38 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("action cancellation diagnostics", () => {
+  it("reports a precondition cancellation before any page effect", async () => {
+    const f = await fixture();
+    const invoke = vi.fn();
+    vi.mocked(checkActionTarget).mockImplementationOnce(async () => {
+      f.abort.abort();
+      return undefined;
+    });
+    expect(await f.run({ ref: "e1" }, "tool.fill", invoke)).toMatchObject({
+      code: "cancelled",
+      data: { phase: "precondition", effect_state: "none" },
+    });
+    expect(invoke).not.toHaveBeenCalled();
+    expect(f.send).not.toHaveBeenCalled();
+  });
+
+  it("reports execution uncertainty when cancellation follows dispatch", async () => {
+    const f = await fixture();
+    expect(
+      await f.run({ ref: "e1" }, "tool.fill", async (runner) => {
+        await runner.send(7, "Input.insertText", { text: "saved" });
+        f.abort.abort();
+        return { tab_id: 7 };
+      }),
+    ).toMatchObject({
+      code: "cancelled",
+      data: { phase: "execution", effect_state: "unknown" },
+    });
+    expect(f.send).toHaveBeenCalledOnce();
+  });
+});
+
 describe.each(["strict", "target"] as const)("completed action receipts (%s)", (policy) => {
   it.each([
     "click",
@@ -391,6 +423,64 @@ describe("negotiated target control", () => {
     expect(second.context_id).toBe(f.first.context_id);
     expect(second.observation_id).not.toBe(f.first.observation_id);
     expect(await f.run()).toEqual({});
+  });
+
+  it("publishes main-document control when a carousel frame navigates during sync", async () => {
+    const f = await fixture();
+    const { frames } = await f.readFrames.mock.results.at(-1)!.value;
+    const slide = { ...frames.get(0)!, document: "slide-1" };
+    frames.set(2, slide);
+    f.readFrames.mockImplementation(async () => ({ frames: structuredClone(frames), gaps: [] }));
+    vi.mocked(handleSnapshot).mockImplementationOnce(async (_sessions, _params, deps) => {
+      deps?.onScene?.({ nodes: [], viewport: { width: 800, height: 600 }, rootFrameId: "root" });
+      frames.set(2, { ...slide, document: "slide-2" });
+      return { text: "@e1 button Continue", tab_id: 7 } as never;
+    });
+
+    const current = await f.sync();
+    expect(current).toMatchObject({
+      context_id: f.first.context_id,
+      observation_id: expect.any(String),
+    });
+    f.session.refStore.set("e1", 4, { tabId: 7, frameId: "root" });
+    expect(await f.run({ observation_id: current.observation_id }, "tool.evaluate")).toMatchObject({
+      data: { reason: "document_changed", effect_state: "none" },
+    });
+    expect(f.send).not.toHaveBeenCalled();
+    const applied = await f.run({ expect: [{ target: "@e1", field: "text", equals: "Continue" }] });
+    expect(applied).toEqual({});
+    expect(f.send).toHaveBeenCalledOnce();
+  });
+
+  it("still requires a fresh observation for iframe targets and iframe conditions", async () => {
+    const f = await fixture();
+    const { frames } = await f.readFrames.mock.results.at(-1)!.value;
+    const slide = { ...frames.get(0)!, document: "slide-1" };
+    frames.set(2, slide);
+    f.readFrames.mockImplementation(async () => ({ frames: structuredClone(frames), gaps: [] }));
+    const synced = await f.sync();
+    f.session.refStore.set("e2", 5, { tabId: 7, frameId: "child" });
+    frames.set(2, { ...slide, document: "slide-2" });
+
+    const context_id = synced.context_id;
+    const inChild = { ref: "e2" };
+    const inMain = { ref: undefined, selector: "#continue" };
+    for (const rejected of [
+      await f.run({ context_id, ...inChild }),
+      await f.run({ context_id, source: inMain, target: inChild }, "tool.drag"),
+      await f.run({
+        context_id,
+        ...inMain,
+        expect: [{ target: "@e2", field: "text", equals: "Slide 1" }],
+      }),
+    ]) {
+      expect(rejected).toMatchObject({
+        data: { reason: "document_changed", effect_state: "none" },
+      });
+    }
+    expect(f.send).not.toHaveBeenCalled();
+    expect(await f.run({ context_id, ...inMain })).toEqual({ used_selector: "#continue" });
+    expect(f.send).toHaveBeenCalledOnce();
   });
 
   it("keeps a valid receipt when a supplementary sync cannot produce its snapshot", async () => {

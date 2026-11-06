@@ -140,8 +140,8 @@ async function fixture(options: { url?: string; sync?: boolean } = {}) {
     act,
     readFrames,
     resumeFrames,
-    advance: () => {
-      now += 10000;
+    advance: (milliseconds = 10000) => {
+      now += milliseconds;
     },
     beforeDispatch: (work: () => Promise<void>) => {
       beforeDispatch = work;
@@ -161,6 +161,32 @@ afterEach(() => {
 });
 
 describe("renderer-independent control authority", () => {
+  it.each([
+    "pending",
+    "scrolling",
+  ] as const)("waits for %s at dispatch without reporting human control", async (field) => {
+    const f = await fixture();
+    f.change({ [field]: true, revision: 0 });
+    const action = f.act();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(f.native).not.toHaveBeenCalled();
+    expect(f.controller.view(7)?.mode).toBe("acting");
+    f.change({ [field]: false, revision: 0 });
+    expect(await action).not.toHaveProperty("code");
+    expect(f.native).toHaveBeenCalledOnce();
+  });
+  it("lets a confirmed human action win while native input is waiting for a gesture", async () => {
+    const f = await fixture();
+    f.change({ pending: true, revision: 0 });
+    const action = f.act();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    f.change({ pending: false, human: 1, lastInput: 10000 });
+    expect(await action).toMatchObject({
+      code: "permission_denied",
+      data: { effect_state: "none" },
+    });
+    expect(f.native).not.toHaveBeenCalled();
+  });
   it("does not require an observation or query an unavailable renderer", async () => {
     const f = await fixture({ sync: false });
     f.readFrames.mockClear();
@@ -169,6 +195,22 @@ describe("renderer-independent control authority", () => {
     expect(check).not.toThrow();
     expect(f.readFrames).not.toHaveBeenCalled();
     expect(f.native).not.toHaveBeenCalled();
+  });
+
+  it("waits for two seconds of quiet after the person's last completed action", async () => {
+    const f = await fixture();
+    f.change({ human: 1, lastInput: 10000 });
+    f.advance(650);
+    expect(f.controller.view(7)?.mode).toBe("human");
+    expect(() => f.controller.controlGuard("shared", 7)()).toThrow();
+    f.advance(1349);
+    expect(f.controller.view(7)?.mode).toBe("human");
+    expect(() => f.controller.controlGuard("shared", 7)()).toThrow();
+    f.advance(1);
+    expect(f.controller.view(7)?.mode).toBe("syncing");
+    expect(() => f.controller.controlGuard("shared", 7)()).not.toThrow();
+    const fresh = await f.command("sync");
+    expect(await f.act(fresh.context_id)).not.toHaveProperty("code");
   });
 
   it("keeps an old decision revoked after hold and resume", async () => {

@@ -6,10 +6,91 @@ See the [Chinese changelog](CHANGELOG.zh-CN.md). Update both versions in the sam
 
 Starting from 0.2.0, CLI / Extension / DSH Plugin share the same version number.
 
-## [Unreleased]
+## [0.4.2] - 2026-11-05
+
+### Added
+
+- Session controller labels show an agent name, project, session ID and color in
+  browser overlays. CLI and DSH session startup accept the display metadata.
+- Fill supports date, time, datetime-local, month and week inputs, validates
+  formats and min/max limits, and preserves background input state.
+- `bsk mcp` lets MCP clients control BrowserSkill over stdio using the existing
+  daemon and browser extension. `bsk install-skill --mcp` can configure Codex,
+  Claude Code, and Cursor.
+
+### Changed
+
+- Borrowed tabs return relative to their original neighbors, with improved pinned
+  tab and group restoration. Eligible requests support automatic borrowing when
+  borrow confirmation is disabled.
+- The extension restores the `tabGroups` permission to read and restore borrowed
+  tabs' original groups.
+- Shared control waits for two seconds of quiet after the person's last completed
+  action before returning control to the Agent, up from 650 ms.
+- CLI and daemon updates prefer the official website's domestic download source,
+  falling back to GitHub for failed manifest or archive requests and verification.
+  Archive fallback stays on the selected version with SHA256 verification; if both
+  sources fail, the error includes each URL and cause. Explicit manifest overrides
+  continue to use only the configured source.
 
 ### Fixed
 
+- Element waits requery selectors when matched nodes are replaced, avoiding false
+  hidden/detached success while a replacement remains visible.
+- Console capture is enabled only when requested, avoiding repeated reloads on
+  affected anti-debugging pages while preserving capture diagnostics.
+- Debug evidence redacts exact vendor credential headers.
+- DSH fill/select values beginning with `-` are passed as option values rather
+  than being parsed as CLI flags.
+- The shared-control toolbar yields pointer hits during automated clicks,
+  including page actions beneath its lower-right corner. Its controls become
+  interactive again when the click finishes or its passthrough lease expires.
+- Enter dispatches keydown and text together, preserving a completed link or
+  form navigation receipt without sending a separate character to a new page.
+  The next action still requires a fresh control context after navigation.
+- Timed-out page actions cancel and await bounded cleanup. Error responses retain
+  execution phase, effect state and operation identity; missing receipts remain
+  explicitly uncertain. CLI and MCP timeout guidance asks callers to inspect the
+  application result before choosing another action instead of blindly retrying.
+- Repeated action labels use their own DOM container's text for context, including
+  labels after the button, so adjacent records no longer misidentify their target.
+- CLI cancellation keeps the original RPC progressing and retries cancellation
+  that arrives before daemon registration, reducing background screenshots that
+  keep a session busy after the caller stops. Confirmation and response waiting
+  share a two-second budget, including MCP cancellation; transfer cleanup keeps
+  its separate bounded budget. Requests registered after that deadline still
+  require daemon-side cancellation tracking
+  ([#419](https://github.com/Tencent/BrowserSkill/pull/419)).
+- Saved HTML debug captures redact sensitive input values when `autocomplete`
+  contains surrounding whitespace or multiple tokens, such as
+  `section-login one-time-code` or `section-checkout billing cc-number`.
+  Non-sensitive token lists such as `section-login email` remain unchanged
+  ([#566](https://github.com/Tencent/BrowserSkill/pull/566)).
+- Pages that handle the legacy `mousewheel` event, such as Bilibili's player volume,
+  receive wheel input again. The extension listened for `wheel` on every page even
+  without a shared-control session, which made Chromium skip those handlers; it now
+  listens only while collecting, on `window`.
+- Commands no longer wait until their timeout when truncated page text cuts an
+  emoji in half, for example `bsk console --max-text-chars 4` on `Hi 🚀 there`.
+  The lone surrogate left by the cut made the daemon drop the extension's whole
+  reply; the extension now sends it as `U+FFFD`.
+- Shared control keeps running during scrolling and ineffective key presses. Completed
+  page clicks, keyboard activation and actual field edits yield to the person. Pending
+  gestures wait at dispatch without revoking control, and coordinate input waits for
+  scrolling to settle. Focusing a text field alone no longer holds editing control.
+
+- With target control, a carousel, video embed or ad refreshing an iframe no
+  longer revokes actions whose targets and preconditions are all in the main
+  document. Actions involving iframe refs or a strict observation require a
+  fresh sync when the frame documents change.
+- Values in one-time-code, card and password fields marked by `autocomplete`
+  (`one-time-code`, `cc-*`, `current-password`, `new-password`), which observations
+  already hide, are also kept out of shared-control field state, `expect` failure
+  details, structured extraction and recorded fill steps. Every check matches each
+  `autocomplete` token, so `section-login current-password` or `billing cc-number`
+  values stay hidden too. Password fields that a "show password" toggle switches to
+  `type=text` also stay masked across shared-control field state and recorded steps
+  and state observations.
 - On Windows, pairing, rotating or revoking a remote browser no longer fails with
   `replace authorization snapshot: Access is denied` when another request is
   reading the authorization store at the same moment.
