@@ -52,6 +52,8 @@ determines which versions can connect.
 
 ### Fixed
 
+- `press` maps US-layout punctuation to its physical `code` and virtual key code,
+  so shortcuts such as `Ctrl+/` reach handlers that check `event.code`.
 - Main-document SPA route changes, including away-and-back and hash routes,
   invalidate old control contexts and refs. Supplementary reads never renew them.
   This also covers passive reads of already loaded tabs and fresh debugger attachments.
@@ -62,11 +64,24 @@ determines which versions can connect.
   instead of repeated sync/evaluate refusals.
 - Control-state sampling recollects once after the browser proves that a failed child document retired; an active unobservable frame still blocks input.
 - Removed nodes already collected by CDP report target_detached with node identity, consistently with detached nodes that remain inspectable; other CDP failures remain target_unavailable.
+- Recording captures option changes on native `<select>` controls inside open shadow roots,
+  whose `change` events do not reach the document.
 
 ### Fixed
 
 - Cooperative status updates preserve an active click-passthrough lease, so the
   control panel and its minimized arrow do not swallow automated page clicks.
+- Recording keeps clicks on buttons and links inside an editor's `contenteditable="false"`
+  regions, such as attachment actions, instead of treating them as editor input.
+
+## [Unreleased]
+
+### Fixed
+
+- `extract` applies CSS `uppercase` and `lowercase` to text in table cells,
+  headers, list fields and discovery previews, respecting nested style overrides
+  and language-specific casing. Transformed text remains subject to the byte
+  budget ([#597](https://github.com/Tencent/BrowserSkill/issues/597)).
 
 ## [0.4.2] - 2026-11-05
 
