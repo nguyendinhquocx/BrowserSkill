@@ -52,6 +52,12 @@ jobs:
       - name: Run Windows audit storage tests
         run: cargo test -p bsk --lib --locked daemon::audit::tests
 
+      - name: Run Windows plan and recipe unit tests
+        run: |
+          cargo test -p bsk --lib --locked cli::plan::
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p bsk --lib --locked cli::recipe::
+
       - name: Run Windows audit and browser interaction policy tests
         run: cargo test -p bsk --test audit_ws --test interaction_preferences --locked
 
