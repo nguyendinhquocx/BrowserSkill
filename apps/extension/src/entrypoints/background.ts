@@ -35,7 +35,13 @@ import {
 import { nextOverlayVersion } from "@/lib/overlay-version";
 import { POPUP_PORT_NAME, type PopupInbound, type PopupOutbound } from "@/lib/popup-bridge";
 import { recordFrameCoordinator } from "@/lib/recording/frame-coordinator";
-import { attachSessionsLiveFlag } from "@/lib/sessions-live-flag";
+import {
+  ensureOverlayInjected,
+  forgetOverlayInjectedTab,
+  injectCooperationAllFrames,
+  RuntimeContentScriptCoordinator,
+  sendTabMessageBounded,
+} from "@/lib/runtime-content-scripts";
 import { captureTaskPreview, focusTask } from "@/lib/task-preview";
 import { attachUiChannel } from "@/lib/ui-channel";
 import { attachLongScreenshot } from "@/long-screenshot/background";
@@ -54,12 +60,18 @@ import {
 import { ToolDispatcher } from "@/tools/dispatcher";
 import { clearHelpForSession, hasActiveHelp } from "@/tools/human-loop";
 import {
+  clearObserveIdentityStreaksForSession,
+  clearObserveIdentityStreaksForTab,
+} from "@/tools/observation";
+import {
+  activeRecordingCount,
   attachRecordFinishListener,
   attachRecordQueryListener,
   attachRecordStepListener,
   clearRecordingForSession,
   hasActiveRecording,
   type RecordRuntimeDeps,
+  subscribeActiveRecordings,
 } from "@/tools/record";
 import { cdpBlockedUrlReason, chromeTabsApi } from "@/tools/shared";
 import { chromeTabMutationApi } from "@/tools/tabs";
@@ -70,7 +82,7 @@ import { type RemoteEndpoint, remoteSocket } from "@/transport/remote-endpoint";
 import type { Transport } from "@/transport/transport";
 import { WSTransport } from "@/transport/ws-transport";
 import { attachVideoBridge } from "@/video/bridge";
-import { BrowserVideoHost } from "@/video/host";
+import { browserVideoHost } from "@/video/host";
 import { VideoManager } from "@/video/manager";
 import { VIDEO_OVERLAY } from "@/video/overlay";
 
@@ -125,8 +137,9 @@ export default defineBackground(() => {
       cooperation.release(ctx.sessionId);
       debug.releaseSession(ctx.sessionId);
       void video.stopSession(ctx.sessionId).catch(() => {});
-      clearRecordingForSession(ctx.sessionId);
+      clearRecordingForSession(ctx.sessionId, recordDeps);
       clearHelpForSession(ctx.sessionId);
+      clearObserveIdentityStreaksForSession(ctx.sessionId);
     },
     onSessionsChanged: onOverlaySessionStateChanged,
   });
@@ -148,6 +161,9 @@ export default defineBackground(() => {
         /* Disconnect cleanup ends the owning sessions. */
       }
     },
+    (details) => {
+      void ensureOverlayInjected(details.tabId, { documentId: details.documentId });
+    },
   );
   // Default collaboration is always present; only explicit help or recording
   // suspends routing of unrelated tabs out of the task window.
@@ -165,6 +181,16 @@ export default defineBackground(() => {
       sessions.invalidateTabRefs(tabId);
       cooperation.invalidate(tabId);
     },
+    onRouteChanged: (tabId, url) => {
+      cooperation.invalidateRoute(tabId, url);
+    },
+    onChildFramesInvalidated: (tabId, staleFrameIds) => {
+      sessions.invalidateTabChildFrames(tabId, staleFrameIds);
+      cooperation.invalidateChildFrames(tabId);
+    },
+    onSoftDetached: (tabId) => {
+      cooperation.markAccessibilityNeedsEnable(tabId);
+    },
     canControlDialog: async (tabId) => {
       const tab = await chrome.tabs.get(tabId);
       const session = sessions.findByWindowId(tab.windowId);
@@ -173,7 +199,7 @@ export default defineBackground(() => {
   });
   const debug = new DebugManager(sessions, cdp, chrome.tabs, Date.now, new LocalDebugArchive());
   attachDebugBridge(sessions, debug);
-  const videoHost = new BrowserVideoHost();
+  const videoHost = browserVideoHost;
   let upgradeNotice: ReturnType<typeof attachDaemonUpgradeNotice> | undefined;
   const video = new VideoManager({
     sessions,
@@ -182,7 +208,19 @@ export default defineBackground(() => {
     host: videoHost,
     owner: () => requestedConnection?.key ?? "unavailable",
     overlay: async (tabId, recordingId) => {
+      if (recordingId !== null) {
+        await ensureOverlayInjected(tabId);
+      }
       try {
+        if (recordingId === null) {
+          await sendTabMessageBounded(
+            tabId,
+            { type: VIDEO_OVERLAY, recording_id: null },
+            undefined,
+            { frameId: 0 },
+          );
+          return {};
+        }
         // Another content script can receive messages before the overlay script
         // mounts, resolving undefined instead of reporting a missing receiver.
         // The overlay stays hidden until its own video handshake completes.
@@ -235,7 +273,11 @@ export default defineBackground(() => {
     if (source.tabId !== undefined)
       void video.stopTab(source.tabId, "debugger_detached").catch(() => {});
   });
-  const sessionsLive = attachSessionsLiveFlag({ manager: sessions });
+  const runtimeScripts = new RuntimeContentScriptCoordinator({
+    liveSessions: () => sessions.list().length,
+    activeRecordings: () => activeRecordingCount() ?? 0,
+  });
+  subscribeActiveRecordings?.(() => runtimeScripts.sync());
   const popupSnapshotRefreshers = new Set<() => void>();
   const controlModes = new Map<string, OverlayMode>();
   const minimizedControlSessions = new Set<string>();
@@ -325,20 +367,22 @@ export default defineBackground(() => {
     };
   }
 
-  async function pushOverlayStateToTab(
-    tabId: number,
-    state: OverlayAgentStateMessage,
-  ): Promise<void> {
-    try {
-      await chrome.tabs.sendMessage(tabId, state);
-    } catch {
-      // Restricted pages and not-yet-loaded content scripts cannot receive messages.
-    }
+  function isControlledTabInWindow(tabId?: number, windowId?: number): boolean {
+    if (typeof tabId !== "number" || typeof windowId !== "number") return false;
+    const ctx = sessions.findByWindowId(windowId);
+    return ctx !== null && isAgentControlledTab(ctx, tabId);
   }
 
   async function pushOverlayStateForTab(tabId: number, windowId?: number): Promise<void> {
+    if (isControlledTabInWindow(tabId, windowId)) {
+      await ensureOverlayInjected(tabId);
+    }
     const state = overlayStateForTab(tabId, windowId);
-    await pushOverlayStateToTab(tabId, state);
+    try {
+      await sendTabMessageBounded(tabId, state);
+    } catch {
+      // Restricted pages and uninjected free tabs cannot receive messages.
+    }
   }
 
   async function pushOverlayStateForWindow(windowId: number): Promise<void> {
@@ -358,12 +402,12 @@ export default defineBackground(() => {
     }
   }
 
-  function onOverlaySessionStateChanged(): void {
+  function onOverlaySessionStateChanged(): Promise<void> {
     cooperation.syncSessions();
     windowRouting.sync();
     debug.sync();
     video.sync();
-    void sessionsLive.syncFromManager();
+    const scriptSync = runtimeScripts.sync();
     const liveSessionIds = new Set(sessions.list().map((ctx) => ctx.sessionId));
     for (const sessionId of controlModes.keys()) {
       if (!liveSessionIds.has(sessionId)) controlModes.delete(sessionId);
@@ -376,6 +420,7 @@ export default defineBackground(() => {
     });
     pushAllAgentOverlayStates();
     for (const refresh of popupSnapshotRefreshers) refresh();
+    return scriptSync;
   }
 
   function onBrowserControlResumed(sessionId: string): void {
@@ -419,36 +464,30 @@ export default defineBackground(() => {
         .catch((error) => console.debug("[bsk] observed tab release failed", error));
   });
   chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+    forgetOverlayInjectedTab(tabId);
     void video.stopTab(tabId, "tab_closed").catch(() => {});
     debug.stopTab(tabId, "tab_closed");
     sessions.forgetClosedTab(tabId, { isWindowClosing: removeInfo.isWindowClosing });
     cdp.forgetClosedTab?.(tabId);
+    dispatcher.forgetClosedTab(tabId);
+    clearObserveIdentityStreaksForTab(tabId);
     debug.sync();
   });
-  // Re-sync the storage.session flag on SW startup so a previous SW's
-  // stale `true` does not keep waking us on every page load until the
-  // first mutation (review M4/M5 round 3 m-R3-1).
-  void sessionsLive.refresh();
-  const cleanupAfterDisconnect = createDisconnectCleanup({
-    manager: sessions,
-    // Same contract as the dispatcher's `tool.session_stop`: without these
-    // deps the agent-tab cleanup and the window-release path are dead code.
-    sessionStopDeps: {
-      cdp,
-      tabManagement: { tabs: chromeTabMutationApi },
-      tabsQuery: chromeTabsApi,
-    },
-    onSessionsChanged: onOverlaySessionStateChanged,
-  });
+  // Reconcile dynamic Tier B content-script registrations on SW startup so
+  // idle browser startups always begin with zero registered content scripts.
+  void runtimeScripts.sync();
   const recordDeps = {
     tabsApi: chrome.tabs,
     cdp,
     frameCoordinator: recordFrameCoordinator,
     sendToTab: (tabId: number, msg: Parameters<typeof chrome.tabs.sendMessage>[1]) =>
-      chrome.tabs.sendMessage(tabId, msg),
+      sendTabMessageBounded(tabId, msg),
     bypassOverlay: async (tabId: number, enabled: boolean) => {
+      if (enabled) {
+        await ensureOverlayInjected(tabId);
+      }
       try {
-        await chrome.tabs.sendMessage(tabId, {
+        await sendTabMessageBounded(tabId, {
           type: OVERLAY_AUTOMATION_BYPASS,
           enabled,
         });
@@ -457,6 +496,18 @@ export default defineBackground(() => {
       }
     },
   } satisfies RecordRuntimeDeps;
+  const cleanupAfterDisconnect = createDisconnectCleanup({
+    manager: sessions,
+    // Same contract as the dispatcher's `tool.session_stop`: without these
+    // deps the agent-tab cleanup and the window-release path are dead code.
+    sessionStopDeps: {
+      cdp,
+      recording: recordDeps,
+      tabManagement: { tabs: chromeTabMutationApi },
+      tabsQuery: chromeTabsApi,
+    },
+    onSessionsChanged: onOverlaySessionStateChanged,
+  });
   recordFrameCoordinator.attach();
   attachRecordStepListener(recordDeps);
   attachRecordFinishListener(recordDeps);
@@ -490,8 +541,12 @@ export default defineBackground(() => {
     onSessionsChanged: onOverlaySessionStateChanged,
     onBrowserControlResumed,
     onAgentTabClaimed: (tabId, windowId) => {
-      void cooperation.observeTab(tabId).catch(() => {});
-      void pushOverlayStateForTab(tabId, windowId);
+      void injectCooperationAllFrames(tabId)
+        .catch(() => {})
+        .then(() => {
+          void cooperation.observeTab(tabId).catch(() => {});
+          void pushOverlayStateForTab(tabId, windowId);
+        });
     },
     approveBorrow: async (ctx) => {
       await interactionPreferences.readyOrFallback();
@@ -544,28 +599,34 @@ export default defineBackground(() => {
       "[browser-skill] chrome.notifications.onButtonClicked unavailable; borrow Allow/Deny buttons will be inactive",
     );
   }
-  // MV3 service worker keepalive + reconnect supervisor (review M4/M5
-  // C3 + C4). Every 30s the alarm wakes the SW; if the transport is
-  // not connected we force a fresh connect attempt so we never sit on
-  // a stale `disconnected` state when the setTimeout-based reconnect
-  // dies with the SW. Reconnect is skipped when the user has disabled
-  // the BrowserSkill connection.
-  startKeepalive({
-    transport,
-    requestConnect: () => controller.requestConnect(),
-  });
-
   // Application-level heartbeat (Chrome 116+): while the post-handshake
   // link is live, beat every 20s so WebSocket activity keeps the service
   // worker — and thus the daemon connection — alive during use, rather
   // than depending on the boundary-hugging 30s keepalive alarm. The
   // daemon also uses these beats to reap a silently-dead browser.
-  startHeartbeat({
+  const heartbeat = startHeartbeat({
     send: (frame) => transport.send(frame),
     onActiveChange: (cb) =>
       controller.subscribe((snap) =>
         cb(snap.state === "connected" || snap.state === "version_skew"),
       ),
+  });
+
+  // MV3 service worker keepalive + reconnect supervisor (review M4/M5
+  // C3 + C4). Every 30s the alarm wakes the SW; if the transport is
+  // not connected we force a fresh connect attempt so we never sit on
+  // a stale `disconnected` state when the setTimeout-based reconnect
+  // dies with the SW. When already connected post-handshake, also emit
+  // a heartbeat in case SW timer throttling delayed `setInterval`.
+  startKeepalive({
+    transport,
+    requestConnect: () => controller.requestConnect(),
+    onConnectedTick: () => {
+      const { state } = controller.snapshot();
+      if (state === "connected" || state === "version_skew") {
+        heartbeat.beat();
+      }
+    },
   });
 
   // Wake-driven reconnect (best effort). An MV3 service worker is killed
@@ -611,6 +672,7 @@ export default defineBackground(() => {
       beforeDisconnect: cleanup,
       onDisconnected: cleanup,
     });
+    await sessions.reapOrphanAgentWindows();
   })().catch((err) => {
     console.error("[browser-skill] controller failed to attach", err);
   });
@@ -745,7 +807,7 @@ export default defineBackground(() => {
  * — a failure here just means the user will need to retry the
  * interrupt; no daemon state is left half-updated.
  */
-export async function handleOverlayInterrupt(
+async function handleOverlayInterrupt(
   transport: Pick<Transport, "send">,
   sessionId: string,
 ): Promise<OverlayInterruptResponse> {

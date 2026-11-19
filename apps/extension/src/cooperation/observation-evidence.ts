@@ -1,4 +1,9 @@
-import { selectionMarker, type VomNode, type VomScene } from "@browser-skill/vom";
+import {
+  selectionMarker,
+  VOM_DERIVED_NAME_CAP,
+  type VomNode,
+  type VomScene,
+} from "@browser-skill/vom";
 import { playbackProgressMedia } from "./media-progress";
 
 /** Reuse the observation's semantic nodes. Only normalized selection hints from
@@ -92,6 +97,8 @@ const factFields = [
   "visible",
   "pointer_events",
   "attributes",
+  "has_popup",
+  "expanded",
   "src",
 ] as const;
 // Stands in for learned text inside a derived name; HTML text never contains it.
@@ -386,7 +393,7 @@ export function preparationEvidence(
         // Keep every known character exact; never shorten the old observation
         // when an added tooltip hides previously observed text instead.
         if (
-          original?.name?.length === 240 &&
+          original?.name?.length === VOM_DERIVED_NAME_CAP &&
           original.name !== prior?.name &&
           prior?.name &&
           node.name?.startsWith(prior.name)
@@ -521,6 +528,8 @@ function signature(
       semanticAttributes.map((key) =>
         tolerate && contentAttributes.has(key) ? undefined : node.attrs?.[key],
       ),
+      node.hasPopup,
+      node.expanded,
     ];
   };
   const rows = (list: VomNode[], relax: boolean): Row[] =>
@@ -560,6 +569,49 @@ const serialize = (value?: Signature) =>
   value &&
   JSON.stringify([value.scope, value.parts.map(([, list]) => list.map((row) => row.facts))]);
 
+const jsonPrimitiveEq = (x: unknown, y: unknown): boolean => {
+  const nx = x === undefined || (typeof x === "number" && !Number.isFinite(x)) ? null : x;
+  const ny = y === undefined || (typeof y === "number" && !Number.isFinite(y)) ? null : y;
+  return nx === ny;
+};
+
+function sameUnrelaxedNodeFacts(a: VomNode, b: VomNode): boolean {
+  if (
+    !jsonPrimitiveEq(a.frameId, b.frameId) ||
+    !jsonPrimitiveEq(a.backendNodeId, b.backendNodeId) ||
+    !jsonPrimitiveEq(a.role, b.role) ||
+    !jsonPrimitiveEq(a.tag, b.tag) ||
+    !jsonPrimitiveEq(a.name || undefined, b.name || undefined) ||
+    !jsonPrimitiveEq(a.text, b.text) ||
+    (a.value !== undefined) !== (b.value !== undefined) ||
+    !jsonPrimitiveEq(a.value, b.value) ||
+    !jsonPrimitiveEq(a.inForm, b.inForm) ||
+    (a.checked !== undefined) !== (b.checked !== undefined) ||
+    !jsonPrimitiveEq(a.checked, b.checked) ||
+    !jsonPrimitiveEq(a.disabled, b.disabled) ||
+    !jsonPrimitiveEq(a.inert, b.inert) ||
+    !jsonPrimitiveEq(a.modal, b.modal) ||
+    !jsonPrimitiveEq(a.hasPopup, b.hasPopup) ||
+    !jsonPrimitiveEq(a.expanded, b.expanded)
+  ) {
+    return false;
+  }
+  const aVisible = !!a.rect && a.rect.w > 0 && a.rect.h > 0;
+  const bVisible = !!b.rect && b.rect.w > 0 && b.rect.h > 0;
+  if (aVisible !== bVisible) return false;
+  if ((a.pointerEvents === "none") !== (b.pointerEvents === "none")) return false;
+  if (!jsonPrimitiveEq(selectionMarker(a), selectionMarker(b))) return false;
+  const aAttrs = a.attrs;
+  const bAttrs = b.attrs;
+  if (aAttrs !== bAttrs) {
+    for (let i = 0; i < semanticAttributes.length; i++) {
+      const key = semanticAttributes[i];
+      if (!jsonPrimitiveEq(aAttrs?.[key], bAttrs?.[key])) return false;
+    }
+  }
+  return true;
+}
+
 /**
  * `volatile` lists the stable identities (backend nodes, owning any virtual
  * text beneath them) whose own text, aria-label and title may differ. Names
@@ -577,6 +629,19 @@ export function sameObservationEvidence(
   volatile?: ReadonlySet<string>,
   options?: EvidenceOptions,
 ): boolean {
+  if (
+    !target &&
+    !volatile?.size &&
+    !options?.incidentalMedia &&
+    !before.nodes.some((node) => node.modal) &&
+    !after.nodes.some((node) => node.modal)
+  ) {
+    if (before.nodes.length !== after.nodes.length) return false;
+    for (let i = 0; i < before.nodes.length; i++) {
+      if (!sameUnrelaxedNodeFacts(before.nodes[i], after.nodes[i])) return false;
+    }
+    return true;
+  }
   const a = serialize(signature(before, target, volatile, options));
   return a !== undefined && a === serialize(signature(after, target, volatile, options));
 }

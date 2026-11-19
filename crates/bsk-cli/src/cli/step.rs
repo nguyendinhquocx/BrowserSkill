@@ -1,7 +1,7 @@
 //! One explicit action, optional positive readiness condition, then read-only sync.
 use super::{
     TOOL_IPC_TIMEOUT, business_rpc, cooperate,
-    ensure_daemon::ensure_daemon,
+    ensure_daemon::ensure_daemon_optimistic as ensure_daemon,
     error::{CliError, Format},
     observation_view,
 };
@@ -31,7 +31,9 @@ pub enum Action {
 #[derive(Debug, Clone, Args)]
 pub struct StepArgs {
     #[arg(long)]
-    pub session: String,
+    pub session: Option<String>,
+    #[arg(long)]
+    pub scope: Option<String>,
     /// Post-action sync policy. Auto preserves an existing choice or starts target control.
     /// Use cooperate sync first when choosing a policy before the action.
     #[arg(long, value_enum, default_value = "auto")]
@@ -45,13 +47,16 @@ pub struct StepArgs {
     /// Session, tab, context and dependencies come from CLI flags, not this object.
     #[arg(long)]
     pub params: String,
-    /// Known main-document CSS selector that should become visible after the action.
+    /// Known CSS selector (main document and accessible iframes) that should become visible after the action.
     /// Use a positive readiness signal; visibility alone does not prove business success.
     #[arg(long)]
     pub until_visible: Option<String>,
     /// Readiness budget in milliseconds, independent of the action timeout.
     #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u32).range(1..=25000))]
     pub wait_timeout_ms: u32,
+    /// Token budget for the post-action VOM observation. Keep the same budget across syncs, steps, and plans to preserve cache reuse.
+    #[arg(long = "max-tokens")]
+    pub max_tokens: Option<u32>,
     /// Save the unfiltered combined result, atomically, without overwriting.
     #[arg(long)]
     pub save_full: Option<PathBuf>,
@@ -143,7 +148,12 @@ pub(crate) fn reject_reserved(fields: &serde_json::Map<String, Value>) -> anyhow
 pub(crate) fn prepare(args: &StepArgs) -> anyhow::Result<(Method, Value)> {
     check_follow_args(args.until_visible.as_deref(), &args.match_text)?;
     let params: Value = serde_json::from_str(&args.params).context("parse --params JSON")?;
-    action_params(&args.session, args.tab_id, args.action, params)
+    action_params(
+        args.session.as_deref().unwrap_or_default(),
+        args.tab_id,
+        args.action,
+        params,
+    )
 }
 /// Validate one action's protocol fields against its protocol type.
 pub(crate) fn action_params(
@@ -161,13 +171,20 @@ pub(crate) fn action_params(
         object.insert("tab_id".into(), tab.into());
     }
     if let Some(ms) = v.get("timeout_ms") {
-        ensure!(
-            ms.as_u64().is_some_and(|ms| (1..=30000).contains(&ms)),
-            "action timeout_ms must be 1..=30000"
-        );
+        let raw = ms
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("action timeout_ms must be 1..=30000"))?;
+        super::orchestration::validate_action_timeout_ms(raw).map_err(anyhow::Error::msg)?;
     }
     let result = match action {
-        Action::Click => (Method::ToolClick, typed::<ClickParams>(&v)?),
+        Action::Click => {
+            let parsed: ClickParams =
+                serde_json::from_value(v.clone()).context("invalid action parameters")?;
+            let normalized = serde_json::to_value(&parsed)?;
+            known_keys(&v, &normalized)?;
+            super::orchestration::validate_click_params(&parsed).map_err(anyhow::Error::msg)?;
+            (Method::ToolClick, normalized)
+        }
         Action::Press => (Method::ToolPress, typed::<PressParams>(&v)?),
         Action::Fill => (Method::ToolFill, typed::<FillParams>(&v)?),
         Action::Hover => (Method::ToolHover, typed::<HoverParams>(&v)?),
@@ -178,7 +195,7 @@ pub(crate) fn action_params(
         Action::Navigate => (Method::ToolNavigate, typed::<NavigateParams>(&v)?),
     };
     match action {
-        Action::Navigate => {}
+        Action::Navigate | Action::Click => {}
         Action::Drag => {
             target(&result.1["source"], true)?;
             ensure!(
@@ -242,6 +259,7 @@ pub(crate) fn post_sync(
     session: &str,
     policy: cooperate::Policy,
     tab: Option<i64>,
+    max_tokens: Option<u32>,
     result: &mut Value,
     exit: &mut u8,
     call: &mut impl FnMut(Method, Value, Duration) -> Result<Value, CliError>,
@@ -256,7 +274,9 @@ pub(crate) fn post_sync(
                 action: mode,
                 tab_id: tab,
                 timeout_ms: Some(1000),
-                max_tokens: None,
+                max_tokens: matches!(mode, CooperateAction::Sync | CooperateAction::Enable)
+                    .then_some(max_tokens)
+                    .flatten(),
             })
             .expect("serializable sync"),
             TOOL_IPC_TIMEOUT,
@@ -312,9 +332,10 @@ pub(crate) fn run(
         rpc_calls += 1;
         call(method, params, timeout)
     };
+    let session = args.session.as_deref().unwrap_or_default();
     if let Some(selector) = &args.until_visible {
         if await_ready(
-            &args.session,
+            session,
             tab,
             selector,
             args.wait_timeout_ms,
@@ -332,9 +353,10 @@ pub(crate) fn run(
     }
     let ready_ms = start.elapsed().as_millis() - action_ms;
     post_sync(
-        &args.session,
+        session,
         args.policy,
         tab,
+        args.max_tokens,
         &mut result,
         &mut exit,
         &mut call,
@@ -397,6 +419,15 @@ impl<'a> Output<'a> {
         })
     }
 
+    pub(crate) fn with_resolved_session(mut self, resolved: Option<&'a str>) -> Self {
+        if self.session.trim().is_empty()
+            && let Some(sid) = resolved.filter(|s| !s.trim().is_empty())
+        {
+            self.session = sid;
+        }
+        self
+    }
+
     pub(crate) fn finish(self, mut reply: Value, mut exit: u8) -> Result<(), CliError> {
         if business_rpc::cancel_requested() {
             reply["ok"] = false.into();
@@ -409,7 +440,12 @@ impl<'a> Output<'a> {
         }
         if let Some(saved) = self.saved {
             match saved.finish(&reply) {
-                Ok(()) => reply["full_output_path"] = json!(self.save_full),
+                Ok(()) => {
+                    reply["full_output_path"] = json!(self.save_full);
+                    if let Some(post) = reply.get_mut("post") {
+                        observation_view::omit_saved_merge(post);
+                    }
+                }
                 Err(e) => {
                     reply["storage_error"] = e.to_string().into();
                     reply["ok"] = false.into();
@@ -434,32 +470,52 @@ impl<'a> Output<'a> {
     }
 }
 
-pub fn dispatch(args: StepArgs, _format: Format) -> Result<(), CliError> {
+pub fn dispatch(
+    args: StepArgs,
+    ctx: &business_rpc::ClientContext,
+    _format: Format,
+) -> Result<(), CliError> {
     let (method, params) = prepare(&args).map_err(CliError::invalid_params)?;
+    let session = args.session.as_deref().unwrap_or_default();
     let output = Output::prepare(
-        &args.session,
+        session,
         args.baseline.as_deref(),
         args.save_full.as_deref(),
         &args.match_text,
         args.context_lines,
     )?;
-    if matches!(args.policy, cooperate::Policy::Target) {
-        business_rpc::set_target_policy_requested();
-    }
+    let op_ctx = ctx.with_scope(args.scope.as_deref());
+    let aux_ctx = op_ctx.without_action_metadata();
+    let mut first_rpc = true;
     let daemon = ensure_daemon().context("ensure daemon is running")?;
-    if matches!(args.action, Action::Drag) && params["mode"] == "click-move-click" {
-        super::drag::require_click_move_click_daemon(daemon.sock_path.clone())?;
-    }
+    let need_scope_meta = session.trim().is_empty();
+    let mut resolved_session: Option<String> = None;
     let (reply, exit) = run(&args, method, params, |method, params, timeout| {
-        business_rpc::call(
+        let rpc_ctx = if std::mem::take(&mut first_rpc) {
+            &op_ctx
+        } else {
+            &aux_ctx
+        };
+        let meta = crate::ipc_client::IpcRequestMeta {
+            return_scope_meta: need_scope_meta && method == Method::ToolCooperate,
+            ..Default::default()
+        };
+        let (val, resp_meta) = rpc_ctx.call_envelope(
             daemon.sock_path.clone(),
             "step",
             method,
             Some(params),
+            meta,
             timeout,
-        )
+        )?;
+        if let Some(sm) = resp_meta.scope_meta {
+            resolved_session = Some(sm.session_id);
+        }
+        Ok(val)
     });
-    output.finish(reply, exit)
+    output
+        .with_resolved_session(resolved_session.as_deref())
+        .finish(reply, exit)
 }
 
 #[cfg(test)]
@@ -698,7 +754,7 @@ mod tests {
         std::fs::write(&p, "keep").unwrap();
         let mut a = args();
         a.save_full = Some(p.clone());
-        assert!(dispatch(a, Format::Json).is_err());
+        assert!(dispatch(a, &business_rpc::ClientContext::default(), Format::Json).is_err());
         assert_eq!(std::fs::read_to_string(p).unwrap(), "keep");
     }
     #[test]
