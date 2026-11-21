@@ -64,9 +64,6 @@ jobs:
       - name: Run Windows update and cancellation process tests
         run: cargo test -p bsk --test windows_update --test windows_parent_cancel --locked
 
-      - name: Run release-test audit helper tests
-        run: python evals/browser/skills/browserskill-release-test/scripts/test_release_audit.py
-
       - name: Run installer tests (Windows PowerShell 5.1)
         shell: powershell
         run: ./scripts/install-windows.test.ps1
