@@ -7,6 +7,7 @@ CLI 和扩展可以分别发布，能否连接由协议兼容性决定。更新�
 
 ### 新增
 
+- 发版评测可汇总同一候选构建和测试计划的独立轮次，报告实际 `pass@k`、`pass^k` 和不稳定的场景。
 - **MCP 100% 能力对齐**：新增 `bsk_ledger`、`bsk_debug`、`bsk_video` 与 `bsk_record` 一等工具，补齐现有工具全量 CLI 参数与动作（`session open/stop --all`、`sync` 等待/过滤、`wait_ms`、`view`、`screenshot`/`extract` 输出导出、`read` `context` 透传、`upload`/`download`、`tab_borrow`、完整 `emulate` 与 `operation_await` 文件保存），并通过请求级 `ClientContext` 统一 CLI 与 MCP 传输上下文。
 - **编译期 `MethodSpec` 与 `RpcErrorReason` 全栈单一事实源**：为全部 77 个 RPC 方法建立无通配兜底的 `MethodSpec` 元数据并生成 TS 消费端，同时补齐并全栈枚举化 `RpcErrorReason` 及 CLI/MCP 双通道恢复提示（`cli_hint` / `mcp_hint`）。
 - DeepSeek Harness（`dsh`）成为原生 skill 安装目标，支持通过 `bsk install-skill --harness dsh`
@@ -15,6 +16,7 @@ CLI 和扩展可以分别发布，能否连接由协议兼容性决定。更新�
   同步支持与 `bsk session start` 一致的 `agent_name`、`project` 与 `controller_color`
   控制方身份标识（#731）。
 - 在扩展弹窗“自动化设置”中新增 **最小化打开 Agent 窗口** 开关（`bsk_interaction_preferences.openAgentWindowMinimized`，默认关闭），开启后新建的后台 Agent 窗口直接以最小化状态启动而不在屏幕上闪出白框，显式前台打开的会话（`--focus`）与操作录制仍保持正常显示（[#649](https://github.com/Tencent/BrowserSkill/issues/649)）。
+- 新增 `BSK_SESSION_IDLE` 与 `BSK_DAEMON_IDLE` 环境变量支持，可在自动启动、`bsk daemon start`、`bsk daemon restart` 及 `bsk update` 重启时配置会话和本地守护进程空闲超时（显式 CLI 参数始终优先，空白值自动忽略，`--mode server` 模式下忽略 `BSK_DAEMON_IDLE`）（[#456](https://github.com/Tencent/BrowserSkill/issues/456)）。
 
 ### 变更
 
@@ -33,6 +35,11 @@ CLI 和扩展可以分别发布，能否连接由协议兼容性决定。更新�
 
 ### 修复
 
+- 修复默认人机共驾模式下后台未选中标签页与被遮挡非聚焦窗口（如 macOS `--no-focus` Agent 窗口）执行 `bsk screenshot --full-page` 报 `page_hidden` 的问题：在 `guardedRunner` 剥离持久后台执行租约的场景下，`handleFullPageScreenshot` 现为非最小化且未持有持久租约的标签页临时启用 `Emulation.setFocusEmulationEnabled` 并在完成后有界释放（清理失败时通过 `detach` 围栏隔离），同时 `ChromiumCdp` 会保护活跃持久租约（如视频录制）不被临时释放误关，显式最小化窗口仍按预期以 `page_hidden` 拒绝。
+- 修复派发前与变更前拒绝跨扩展及 Rust CLI/守护进程误报 `effect_state: "unknown"` 的问题：`CooperationController` 不再仅因临时 `Emulation.setFocusEmulationEnabled` 将 `sent` 置为 `true`，对在原生输入开始前（且未执行 `DOM.focus`）被拒绝的 `wheel`/`drag`/`press`/`download`/`upload` 统一附带 `dispatched: false`，并在取消分支保留焦点清理失败产生的 `unknown` 回执；`handleFullPageScreenshot` 将 `begin` 发送标记精确收口至 `sendMessage` 边界，对未触发页面变更的拒绝（如最小化窗口 `page_hidden`、`busy` 或发送前失败）返回 `effect_state: "none"`；Rust 侧 `plan`、`recipe::runner` 与 `run_log` 同步对齐 `intent_wal`，一致识别 `dispatched: false` 与 `tool.click` 的 `press_sent: false`。
+- 修复 `bsk window resize` 在窗口尺寸被浏览器或窗口管理器钳制时误报守护进程协议错误的问题（[#692](https://github.com/Tencent/BrowserSkill/issues/692)）：窗口已按允许的最大尺寸完成调整时，CLI 现在报告尺寸被钳制，而非“protocol error communicating with bsk daemon”。失败仍返回退出码 2，仅修正了错误文案；MCP 提示指向 `bsk_inspect(action='observe')` 以确认实际窗口尺寸。
+- `bsk download` 不再在另一会话正在下载时立即失败：等待浏览器级 `chrome.downloads` 槽位的时间被计入调用方自身的 `--timeout` 预算（预留回复余量），等不到时返回带 `waited_ms` 的 `session_busy`，调用方取消时返回 `cancelled` 而非“浏览器忙”，等待耗时从采集预算中扣除；同一会话重复发起下载仍立即失败（[#519](https://github.com/Tencent/BrowserSkill/issues/519)）。
+- `bsk press --hold-ms` 现在会在命令自身的 `--timeout` 到期时停止按住并返回 `timeout`，不再在超过截止时间后仍以成功载荷返回；按键仍会释放，`bsk drag --hold-ms` 原本已是此行为。
 - 在 Windows 上，`daemon stop`、daemon 状态检查、更新后的等待和残留清理不再把 CLI 无权打开的运行中进程（例如从管理员终端启动的进程）当作已退出。
 - 为 Chrome debugger attach 增加 10 秒上限；未响应时返回明确错误，并在允许重试前隔离并回滚迟到的 attach 完成（#452）。
 - 加固守护进程 WebSocket 生命周期、审计存储容错、`tool.debug` 动态副作用策略、自动更新交接及文件传输/运维可靠性：
@@ -95,6 +102,8 @@ CLI 和扩展可以分别发布，能否连接由协议兼容性决定。更新�
 - 录制 contenteditable 编辑器时保留用户输入的换行，多行编辑按原样重放，不再被合并成一行
   （[#594](https://github.com/Tencent/BrowserSkill/issues/594)）。
 - 修复录制模式下点击可交互 `<label>`（含带 `cursor: pointer` 的复选框/单选框标签触发的 `detail: 1` 可信转发点击）时将 `<label>` 与目标控件重复录为两次点击导致回放反复切换的问题，同时保留普通 `<label>` 激活在目标控件上的单次点击记录（#645）。
+- `bsk` 人类可读错误输出现在会打印扩展在证据拒绝时已附带的 `observed_change` / `observed_changes` 诊断，指出发生变化的 part、节点、字段与前后值以及变更计数，不再只显示笼统的“页面内容已变化”；JSON 与 MCP 载荷保持不变（[#540](https://github.com/Tencent/BrowserSkill/issues/540)）。
+- 增强扩展断连自愈与保活恢复：为 WebSocket `CONNECTING` 阶段增加 10 秒超时以便半开连接自动退避重连，MV3 Service Worker 唤醒时先查询再创建 `chrome.alarms` 避免不断重置 30 秒保活周期并以控制器握手状态替代原始套接字状态判断在线，自动回收物理连接与控制器状态脑裂（含 `teardown` 期间迟到连接），为冷启动存储读取补充异常兜底并在打开扩展弹窗时立即触发重连，同时让守护进程 `drive_connection` 在浏览器已被驱逐后仍兜底清理残留会话（[#395](https://github.com/Tencent/BrowserSkill/issues/395)）。
 
 ### 移除
 
